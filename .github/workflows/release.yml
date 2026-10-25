@@ -16,6 +16,16 @@ on:
         description: '要发布的 tag（例如 v0.1.0）。留空则只构建产物、不创建 Release'
         required: false
         type: string
+      draft:
+        description: '创建为草稿 Release'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: '标记为预发布（pre-release）'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -173,6 +183,9 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.prepare.outputs.tag }}
       TARGET: ${{ needs.prepare.outputs.target }}
+      # push 触发时 event.inputs 为空，|| 'false' 兜底
+      DRAFT: ${{ github.event.inputs.draft || 'false' }}
+      PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -194,10 +207,11 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，覆盖上传产物"
+            echo "Release $TAG 已存在，覆盖上传产物（保留原 draft/prerelease 状态）"
             gh release upload "$TAG" ./dist/* --clobber
           else
-            args=(--title "$TAG" --generate-notes)
+            args=(--title "$TAG" --generate-notes \
+                  --draft="$DRAFT" --prerelease="$PRERELEASE")
             if [ -n "$TARGET" ]; then
               args+=(--target "$TARGET")
             fi
