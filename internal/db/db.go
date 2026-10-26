@@ -143,6 +143,8 @@ func (s *Store) migrate() error {
 			source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
 			path TEXT NOT NULL DEFAULT '/',
 			providers TEXT NOT NULL DEFAULT '["nfo","tmdb"]',
+			exclude_mode TEXT NOT NULL DEFAULT 'inherit',
+			excludes TEXT NOT NULL DEFAULT '[]',
 			created_at TIMESTAMP NOT NULL
 		)`,
 		// The places one library scans. A library used to be bound to a single
@@ -266,6 +268,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.migrateItemSourceTypes(); err != nil {
+		return err
+	}
+	if err := s.migrateLibraryExcludes(); err != nil {
 		return err
 	}
 	return s.migrateUsers()
@@ -597,6 +602,22 @@ func (s *Store) migrateItemSourceTypes() error {
 	}
 	for _, id := range ids {
 		if err := s.RefreshItemSourceTypes(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateLibraryExcludes adds the per-library exclusion list. Libraries created
+// before it inherit the global list, which is what the empty mode means — no
+// backfill needed, and a library the user already tuned keeps its behaviour.
+func (s *Store) migrateLibraryExcludes() error {
+	columns := []struct{ name, ddl string }{
+		{"exclude_mode", `ALTER TABLE libraries ADD COLUMN exclude_mode TEXT NOT NULL DEFAULT 'inherit'`},
+		{"excludes", `ALTER TABLE libraries ADD COLUMN excludes TEXT NOT NULL DEFAULT '[]'`},
+	}
+	for _, c := range columns {
+		if err := s.addColumn("libraries", c.name, c.ddl); err != nil {
 			return err
 		}
 	}
@@ -1044,11 +1065,34 @@ func (s *Store) Sources() ([]models.Source, error) {
 
 // ---------- libraries ----------
 
+// orExcludeMode keeps the column honest: only "custom" takes a library off the
+// global list, and anything else is stored as "inherit" so a row's meaning never
+// depends on which caller wrote it.
+func orExcludeMode(mode string) string {
+	if mode == "custom" {
+		return "custom"
+	}
+	return "inherit"
+}
+
+// orExcludes stores an empty list rather than an empty string: the column holds
+// json, and "" would read back as a list nobody can parse.
+func orExcludes(list string) string {
+	if strings.TrimSpace(list) == "" {
+		return "[]"
+	}
+	return list
+}
+
 // CreateLibrary inserts a library, and records where it scans. The first source
 // is the library's own source_id/path, which is what every older caller reads.
 func (s *Store) CreateLibrary(lib *models.Library) error {
-	res, err := s.DB.Exec(`INSERT INTO libraries (name, type, source_id, path, providers, created_at) VALUES (?,?,?,?,?,?)`,
-		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, time.Now())
+	// Write the normalised values back onto the struct: the caller answers the
+	// request from it, and a library handed out saying mode "" would behave as
+	// "inherit" while claiming to have no opinion.
+	lib.ExcludeMode, lib.Excludes = orExcludeMode(lib.ExcludeMode), orExcludes(lib.Excludes)
+	res, err := s.DB.Exec(`INSERT INTO libraries (name, type, source_id, path, providers, exclude_mode, excludes, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.ExcludeMode, lib.Excludes, time.Now())
 	if err != nil {
 		return err
 	}
@@ -1061,8 +1105,9 @@ func (s *Store) CreateLibrary(lib *models.Library) error {
 }
 
 func (s *Store) UpdateLibrary(lib *models.Library) error {
-	_, err := s.DB.Exec(`UPDATE libraries SET name=?, type=?, source_id=?, path=?, providers=? WHERE id=?`,
-		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.ID)
+	lib.ExcludeMode, lib.Excludes = orExcludeMode(lib.ExcludeMode), orExcludes(lib.Excludes)
+	_, err := s.DB.Exec(`UPDATE libraries SET name=?, type=?, source_id=?, path=?, providers=?, exclude_mode=?, excludes=? WHERE id=?`,
+		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.ExcludeMode, lib.Excludes, lib.ID)
 	return err
 }
 
@@ -1161,8 +1206,8 @@ func (s *Store) DeleteLibrary(id int64) error {
 
 func (s *Store) LibraryByID(id int64) (*models.Library, error) {
 	lib := &models.Library{}
-	err := s.DB.QueryRow(`SELECT id, name, type, source_id, path, providers, created_at FROM libraries WHERE id=?`, id).
-		Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.CreatedAt)
+	err := s.DB.QueryRow(`SELECT id, name, type, source_id, path, providers, exclude_mode, excludes, created_at FROM libraries WHERE id=?`, id).
+		Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.ExcludeMode, &lib.Excludes, &lib.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1177,9 +1222,9 @@ func (s *Store) LibraryByID(id int64) (*models.Library, error) {
 func (s *Store) EnsureBrowseLibrary(sourceID int64) (*models.Library, error) {
 	name := fmt.Sprintf("__browse__-%d", sourceID)
 	lib := &models.Library{}
-	err := s.DB.QueryRow(`SELECT id, name, type, source_id, path, providers, created_at
+	err := s.DB.QueryRow(`SELECT id, name, type, source_id, path, providers, exclude_mode, excludes, created_at
 		FROM libraries WHERE name = ? AND source_id = ?`, name, sourceID).
-		Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.CreatedAt)
+		Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.ExcludeMode, &lib.Excludes, &lib.CreatedAt)
 	if err == nil {
 		return lib, nil
 	}
@@ -1194,7 +1239,7 @@ func (s *Store) EnsureBrowseLibrary(sourceID int64) (*models.Library, error) {
 }
 
 func (s *Store) Libraries() ([]models.Library, error) {
-	rows, err := s.DB.Query(`SELECT id, name, type, source_id, path, providers, created_at FROM libraries ORDER BY id`)
+	rows, err := s.DB.Query(`SELECT id, name, type, source_id, path, providers, exclude_mode, excludes, created_at FROM libraries ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,7 +1247,7 @@ func (s *Store) Libraries() ([]models.Library, error) {
 	var out []models.Library
 	for rows.Next() {
 		var lib models.Library
-		if err := rows.Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.CreatedAt); err != nil {
+		if err := rows.Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.ExcludeMode, &lib.Excludes, &lib.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, lib)
