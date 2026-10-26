@@ -124,6 +124,10 @@ type Library struct {
 	// "custom". A file whose name contains one is not imported.
 	Excludes  string    `json:"excludes"`
 	CreatedAt time.Time `json:"created_at"`
+	// PosterMode is "auto" (cover follows the newest item with cached artwork)
+	// or "static" (the user picked a cover, cached as library_<id>_poster.*).
+	PosterMode string `json:"poster_mode"`
+	PosterPath string `json:"poster_path"`
 	// Sources is every place this library scans. SourceID/Path above stay in
 	// step with the first entry, so anything that only knows about one source
 	// keeps working; a library with no entries at all is read as that one.

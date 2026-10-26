@@ -71,6 +71,35 @@ func (s *Server) embyImage(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "Access token or valid image tag required")
 		return
 	}
+	// Library cards use "lib-<id>" ids, so their cover image is resolved against
+	// the library rather than an item. The tag is scoped to a negative id so a
+	// library tag can never authorize the item it borrowed the artwork from.
+	if id := r.PathValue("id"); strings.HasPrefix(id, "lib-") {
+		lib, err := s.Store.LibraryByID(embyNumber(strings.TrimPrefix(id, "lib-")))
+		if err != nil {
+			if authenticated {
+				fail(w, 404, "Library not found")
+			} else {
+				fail(w, 401, "Invalid image tag")
+			}
+			return
+		}
+		name, err := s.Store.LibraryArtwork(lib, kind)
+		if err != nil {
+			fail(w, 500, "Cannot load image")
+			return
+		}
+		if !authenticated && (name == "" || !hmac.Equal([]byte(tag), []byte(s.embyImageAccessTag(-lib.ID, kind, name)))) {
+			fail(w, 401, "Invalid image tag")
+			return
+		}
+		if name == "" {
+			fail(w, 404, "Image not available")
+			return
+		}
+		s.serveImageFile(w, r, name, lib.Name)
+		return
+	}
 	it, err := s.Store.ItemByID(embyNumber(r.PathValue("id")))
 	if err != nil {
 		if authenticated {
