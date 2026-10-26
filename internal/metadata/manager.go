@@ -381,7 +381,10 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 	if !isPlaceholderEpisodeName(ep) {
 		keepName = ep.Name
 	}
-	if keepName != "" && ep.StillPath != "" {
+	// Editions scraped before the naming fix kept every episode's still under
+	// the show's TMDB id, so they all pointed at one file. Treating such a name
+	// as missing lets a rescan write this episode its own copy.
+	if keepName != "" && ep.StillPath != "" && !isSharedTMDBImageName(ep.StillPath, "still") {
 		return
 	}
 	defer func() {
@@ -419,7 +422,7 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 					ep.Overview = e.Overview
 					ep.AirDate = e.AirDate
 					if e.StillPath != "" {
-						ep.StillPath = m.saveTMDBImage(ctx, ep.ID, "still", show.TMDBID, e.StillPath, "w300")
+						ep.StillPath = m.saveTMDBImage(ctx, ep.ID, "still", e.StillPath, "w300")
 					}
 					_ = m.Store.UpdateItemMeta(ep)
 					return
@@ -880,10 +883,10 @@ func (m *Manager) tryMovieTMDBByID(ctx context.Context, it *models.Item, id int)
 	}
 	it.Genres = genresJSON(d.Genres)
 	if d.PosterPath != "" {
-		it.PosterPath = m.saveTMDBImage(ctx, it.ID, "poster", d.ID, d.PosterPath, "w500")
+		it.PosterPath = m.saveTMDBImage(ctx, it.ID, "poster", d.PosterPath, "w500")
 	}
 	if d.BackdropPath != "" {
-		it.BackdropPath = m.saveTMDBImage(ctx, it.ID, "backdrop", d.ID, d.BackdropPath, "w1280")
+		it.BackdropPath = m.saveTMDBImage(ctx, it.ID, "backdrop", d.BackdropPath, "w1280")
 	}
 	return m.Store.UpdateItemMeta(it)
 }
@@ -915,10 +918,10 @@ func (m *Manager) tryShowTMDBByID(ctx context.Context, show *models.Item, id int
 	}
 	show.Genres = genresJSON(d.Genres)
 	if d.PosterPath != "" {
-		show.PosterPath = m.saveTMDBImage(ctx, show.ID, "poster", d.ID, d.PosterPath, "w500")
+		show.PosterPath = m.saveTMDBImage(ctx, show.ID, "poster", d.PosterPath, "w500")
 	}
 	if d.BackdropPath != "" {
-		show.BackdropPath = m.saveTMDBImage(ctx, show.ID, "backdrop", d.ID, d.BackdropPath, "w1280")
+		show.BackdropPath = m.saveTMDBImage(ctx, show.ID, "backdrop", d.BackdropPath, "w1280")
 	}
 	return m.Store.UpdateItemMeta(show)
 }
@@ -1236,7 +1239,7 @@ func (m *Manager) saveBGMImage(ctx context.Context, itemID int64, kind, rawURL s
 	if err != nil || len(data) < 100 {
 		return ""
 	}
-	return m.writeImage(itemID, kind, 0, u, data)
+	return m.writeImage(itemID, kind, u, data)
 }
 
 // normTitle lowercases, folds Traditional to Simplified and strips
@@ -1257,13 +1260,13 @@ func normTitle(s string) string {
 
 // ---------- images ----------
 
-func (m *Manager) saveTMDBImage(ctx context.Context, itemID int64, kind string, tmdbID int, path, size string) string {
+func (m *Manager) saveTMDBImage(ctx context.Context, itemID int64, kind, path, size string) string {
 	t := m.tmdb()
 	data, err := t.DownloadImage(ctx, path, size)
 	if err != nil || len(data) < 100 {
 		return ""
 	}
-	return m.writeImage(itemID, kind, tmdbID, path, data)
+	return m.writeImage(itemID, kind, path, data)
 }
 
 func (m *Manager) saveURLImage(ctx context.Context, u string, itemID int64, kind string) string {
@@ -1284,7 +1287,7 @@ func (m *Manager) saveURLImage(ctx context.Context, u string, itemID int64, kind
 	if err != nil || len(data) < 100 {
 		return ""
 	}
-	return m.writeImage(itemID, kind, 0, u, data)
+	return m.writeImage(itemID, kind, u, data)
 }
 
 func (m *Manager) saveRawImage(ctx context.Context, drv source.Driver, p string, itemID int64, kind string) string {
@@ -1297,18 +1300,20 @@ func (m *Manager) saveRawImage(ctx context.Context, drv source.Driver, p string,
 	if err != nil || len(data) < 100 {
 		return ""
 	}
-	return m.writeImage(itemID, kind, 0, p, data)
+	return m.writeImage(itemID, kind, p, data)
 }
 
-func (m *Manager) writeImage(itemID int64, kind string, tmdbID int, srcPath string, data []byte) string {
+func (m *Manager) writeImage(itemID int64, kind, srcPath string, data []byte) string {
 	dir := m.Cfg.ImagesDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ""
 	}
+	// The item id is what makes a cached image unique. A TMDB id is not: every
+	// episode of a show is enriched with the show's own TMDB id, so naming an
+	// episode's still tmdb_<id>_still made each episode overwrite the previous
+	// one. The item id is also stable across re-identification, so re-scraping
+	// an item overwrites its own artwork instead of leaving orphans behind.
 	name := fmt.Sprintf("item_%d_%s", itemID, kind)
-	if tmdbID > 0 {
-		name = fmt.Sprintf("tmdb_%d_%s", tmdbID, kind)
-	}
 	switch {
 	case strings.Contains(strings.ToLower(srcPath), ".png"):
 		name += ".png"
@@ -1322,6 +1327,17 @@ func (m *Manager) writeImage(itemID int64, kind string, tmdbID int, srcPath stri
 		return ""
 	}
 	return name
+}
+
+// isSharedTMDBImageName reports whether a stored image name is one of the old
+// tmdb_<id>_<kind> names, which every episode of a show shared and therefore
+// overwrote each other. Such a name is not usable artwork for an episode.
+func isSharedTMDBImageName(name, kind string) bool {
+	base := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
+	if !strings.HasPrefix(base, "tmdb_") {
+		return false
+	}
+	return strings.HasSuffix(base, "_"+kind)
 }
 
 // ---------- helpers ----------
