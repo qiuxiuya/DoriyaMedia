@@ -90,7 +90,9 @@ func (s *Server) embyMediaSource(f *models.MediaFile, r *http.Request) map[strin
 				break
 			}
 		}
-		delivery := fmt.Sprintf("/emby/Videos/%d/%d/Subtitles/%d/Stream.vtt?api_key=%s", f.ItemID, f.ID, index, url.QueryEscape(embyToken(r)))
+		// Server-root relative, like the official server. Clients prepend their
+		// configured base path, so including /emby here produced /emby/emby/...
+		delivery := fmt.Sprintf("/Videos/%d/%d/Subtitles/%d/Stream.vtt?api_key=%s", f.ItemID, f.ID, index, url.QueryEscape(embyToken(r)))
 		streams = append(streams, map[string]any{"Index": index, "Type": "Subtitle", "Codec": "webvtt", "Language": sub.Lang, "Title": sub.Title, "DisplayTitle": sub.Title, "IsExternal": true, "IsTextSubtitleStream": true, "SupportsExternalStream": true, "DeliveryMethod": "External", "DeliveryUrl": delivery, "IsDefault": false, "IsForced": false})
 	}
 	bitrate, _ := p.Format.BitRate.Int64()
