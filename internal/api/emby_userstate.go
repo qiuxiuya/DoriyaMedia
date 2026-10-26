@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"doriyamedia/internal/models"
@@ -16,6 +17,7 @@ func (s *Server) embyRegisterUserState(secured func(string, authedHandler)) {
 		req.Method = http.MethodDelete
 		s.embyFavorite(w, req, u)
 	})
+	secured("POST /users/{user}/items/{id}/hidefromresume", s.embyHideFromResume)
 	for _, method := range []string{"POST", "DELETE"} {
 		secured(method+" /users/{user}/playeditems/{id}", s.embyPlayed)
 	}
@@ -194,6 +196,31 @@ func (s *Server) embyPlayed(w http.ResponseWriter, r *http.Request, u *models.Us
 		}
 	}
 	writeJSON(w, 200, ud)
+}
+
+// embyHideFromResume implements the "remove from Continue Watching" action the
+// official clients send when the user dismisses a resume card. Hide defaults to
+// true, and Hide=false restores the card.
+func (s *Server) embyHideFromResume(w http.ResponseWriter, r *http.Request, u *models.User) {
+	it, err := s.Store.ItemByID(embyNumber(r.PathValue("id")))
+	if err != nil {
+		fail(w, 404, "Item not found")
+		return
+	}
+	hide := true
+	if v := embyQuery(r, "Hide"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			fail(w, 400, "Invalid Hide value")
+			return
+		}
+		hide = b
+	}
+	if err := s.Store.HideFromResume(u.ID, it.ID, hide); err != nil {
+		fail(w, 500, "Cannot update resume state")
+		return
+	}
+	writeJSON(w, 200, s.embyItem(it, u, r)["UserData"])
 }
 
 // embyDescendantFiles collects the media files of every descendant item. It

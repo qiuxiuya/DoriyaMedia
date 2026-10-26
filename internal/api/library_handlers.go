@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -398,6 +399,12 @@ func (s *Server) handleUpdateLibrary(w http.ResponseWriter, r *http.Request, use
 	if p := string(req.Providers); p != "" {
 		lib.Providers = p
 	}
+	// The cover mode is a library setting; the pinned filename is only ever set
+	// by the poster endpoints, so a request cannot point it at another file.
+	switch req.PosterMode {
+	case "auto", "static":
+		lib.PosterMode = req.PosterMode
+	}
 	if err := s.Store.UpdateLibrary(lib); err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -641,9 +648,15 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.servePlaceholder(w, r, item.Name)
 		return
 	}
+	s.serveImageFile(w, r, name, item.Name)
+}
+
+// serveImageFile serves a cached image by filename, falling back to the
+// placeholder card when the file is missing.
+func (s *Server) serveImageFile(w http.ResponseWriter, r *http.Request, name, title string) {
 	full := filepath.Join(s.Cfg.ImagesDir(), filepath.Base(name))
 	if _, err := os.Stat(full); err != nil {
-		s.servePlaceholder(w, r, item.Name)
+		s.servePlaceholder(w, r, title)
 		return
 	}
 	http.ServeFile(w, r, full)
@@ -730,4 +743,192 @@ func (s *Server) handleListProgress(w http.ResponseWriter, r *http.Request, user
 		progs = []models.Progress{}
 	}
 	writeJSON(w, 200, progs)
+}
+
+// ---------- library cover ----------
+
+const maxLibraryPosterBytes = 8 << 20
+
+// libraryPosterExt maps a sniffed content type to the file extension used for
+// the cached cover. Anything else is rejected instead of stored as garbage.
+func libraryPosterExt(contentType string) string {
+	switch contentType {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	}
+	return ""
+}
+
+// handleLibraryPoster serves whatever cover the library currently shows, so the
+// settings form can preview it before and after changing the mode.
+func (s *Server) handleLibraryPoster(w http.ResponseWriter, r *http.Request, user *models.User) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "媒体库 ID 无效")
+		return
+	}
+	lib, err := s.Store.LibraryByID(id)
+	if err != nil {
+		fail(w, 404, "媒体库不存在")
+		return
+	}
+	name, err := s.Store.LibraryArtwork(lib, "primary")
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if name == "" {
+		fail(w, 404, "该媒体库还没有封面")
+		return
+	}
+	s.serveImageFile(w, r, name, lib.Name)
+}
+
+// handleLibraryPosterUpload stores a cover the user picked. The image is cached
+// under the library's own name, so later item artwork cannot change it.
+func (s *Server) handleLibraryPosterUpload(w http.ResponseWriter, r *http.Request, user *models.User) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "媒体库 ID 无效")
+		return
+	}
+	lib, err := s.Store.LibraryByID(id)
+	if err != nil {
+		fail(w, 404, "媒体库不存在")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLibraryPosterBytes)
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			fail(w, 400, "图片太大,不能超过 8 MB")
+			return
+		}
+		fail(w, 400, "请选择图片文件")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxLibraryPosterBytes))
+	if err != nil || len(data) == 0 {
+		fail(w, 400, "图片读取失败")
+		return
+	}
+	ext := libraryPosterExt(http.DetectContentType(data))
+	if ext == "" {
+		fail(w, 400, "只支持 PNG、JPEG 或 WebP 图片")
+		return
+	}
+	name, err := s.saveLibraryPoster(lib.ID, ext, data)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if err := s.Store.SetLibraryPoster(lib.ID, "static", name); err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if fresh, err := s.Store.LibraryByID(lib.ID); err == nil {
+		lib = fresh
+	}
+	writeJSON(w, 200, lib)
+}
+
+// handleLibraryPosterAuto pins the newest cached item artwork as the cover,
+// which is what the "自动获取" button next to the file picker does.
+func (s *Server) handleLibraryPosterAuto(w http.ResponseWriter, r *http.Request, user *models.User) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "媒体库 ID 无效")
+		return
+	}
+	lib, err := s.Store.LibraryByID(id)
+	if err != nil {
+		fail(w, 404, "媒体库不存在")
+		return
+	}
+	source, err := s.Store.LibraryAutoArtwork(lib.ID, "primary")
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if source == "" {
+		fail(w, 409, "该媒体库还没有已缓存的海报,先扫描或刮削")
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(s.Cfg.ImagesDir(), filepath.Base(source)))
+	if err != nil {
+		fail(w, 409, "海报文件不在缓存目录里,重新扫描后再试")
+		return
+	}
+	ext := libraryPosterExt(http.DetectContentType(data))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(source))
+	}
+	if ext == "" {
+		ext = ".jpg"
+	}
+	name, err := s.saveLibraryPoster(lib.ID, ext, data)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if err := s.Store.SetLibraryPoster(lib.ID, "static", name); err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if fresh, err := s.Store.LibraryByID(lib.ID); err == nil {
+		lib = fresh
+	}
+	writeJSON(w, 200, lib)
+}
+
+// handleLibraryPosterClear drops the pinned cover and returns to "auto".
+func (s *Server) handleLibraryPosterClear(w http.ResponseWriter, r *http.Request, user *models.User) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "媒体库 ID 无效")
+		return
+	}
+	lib, err := s.Store.LibraryByID(id)
+	if err != nil {
+		fail(w, 404, "媒体库不存在")
+		return
+	}
+	matches, _ := filepath.Glob(filepath.Join(s.Cfg.ImagesDir(), fmt.Sprintf("library_%d_poster.*", lib.ID)))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+	if err := s.Store.SetLibraryPoster(lib.ID, "auto", ""); err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if fresh, err := s.Store.LibraryByID(lib.ID); err == nil {
+		lib = fresh
+	}
+	writeJSON(w, 200, lib)
+}
+
+// saveLibraryPoster writes the cover bytes and removes a stale copy in another
+// format, so the library never keeps two covers with one of them unread.
+func (s *Server) saveLibraryPoster(libraryID int64, ext string, data []byte) (string, error) {
+	dir := s.Cfg.ImagesDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("library_%d_poster%s", libraryID, ext)
+	matches, _ := filepath.Glob(filepath.Join(dir, fmt.Sprintf("library_%d_poster.*", libraryID)))
+	for _, m := range matches {
+		if filepath.Base(m) != name {
+			_ = os.Remove(m)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		return "", err
+	}
+	return name, nil
 }

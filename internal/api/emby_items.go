@@ -54,7 +54,17 @@ func (s *Server) embyLibrary(lib models.Library) map[string]any {
 	if lib.Type == "series" {
 		typ = "tvshows"
 	}
-	return map[string]any{"Id": "lib-" + embyID(lib.ID), "Name": lib.Name, "Type": "CollectionFolder", "CollectionType": typ, "IsFolder": true, "ServerId": s.embyServerID(), "ImageTags": map[string]string{}, "BackdropImageTags": []string{}, "UserData": map[string]any{"Played": false, "IsFavorite": false, "PlaybackPositionTicks": 0, "Key": "lib-" + embyID(lib.ID)}}
+	out := map[string]any{"Id": "lib-" + embyID(lib.ID), "Name": lib.Name, "Type": "CollectionFolder", "CollectionType": typ, "IsFolder": true, "ServerId": s.embyServerID(), "ImageTags": map[string]string{}, "BackdropImageTags": []string{}, "UserData": map[string]any{"Played": false, "IsFavorite": false, "PlaybackPositionTicks": 0, "Key": "lib-" + embyID(lib.ID)}}
+	// A library has no artwork of its own, so its cover is the newest item's
+	// poster in that library. The tag is scoped to the library id, which is what
+	// the client will request the image for.
+	if name, err := s.Store.LibraryArtwork(&lib, "primary"); err == nil && name != "" {
+		out["ImageTags"] = map[string]string{"Primary": s.embyImageAccessTag(-lib.ID, "primary", name)}
+	}
+	if name, err := s.Store.LibraryArtwork(&lib, "backdrop"); err == nil && name != "" {
+		out["BackdropImageTags"] = []string{s.embyImageAccessTag(-lib.ID, "backdrop", name)}
+	}
+	return out
 }
 func (s *Server) embyViews(w http.ResponseWriter, r *http.Request, u *models.User) {
 	libs, err := s.Store.Libraries()
@@ -373,6 +383,10 @@ func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User
 	}
 	if strings.HasSuffix(r.URL.Path, "/resume") || strings.Contains(strings.ToLower(embyQuery(r, "Filters")), "isresumable") {
 		where = append(where, "EXISTS (SELECT 1 FROM progress p WHERE p.item_id=i.id AND p.user_id=? AND p.position>0 AND p.duration>0 AND p.position<p.duration*0.9)")
+		args = append(args, u.ID)
+		// HideFromResume removes a card from Continue Watching without touching
+		// the progress row, so the played state and position stay intact.
+		where = append(where, "NOT EXISTS (SELECT 1 FROM resume_hidden h WHERE h.item_id=i.id AND h.user_id=?)")
 		args = append(args, u.ID)
 	}
 	if v := embyQuery(r, "IsPlayed"); strings.EqualFold(v, "true") || strings.EqualFold(v, "false") {

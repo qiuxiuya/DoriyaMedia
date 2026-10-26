@@ -100,6 +100,11 @@ func (s *Store) migrate() error {
 			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 			data TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS resume_hidden (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+			PRIMARY KEY (user_id, item_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS emby_favorites (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -143,7 +148,9 @@ func (s *Store) migrate() error {
 			source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
 			path TEXT NOT NULL DEFAULT '/',
 			providers TEXT NOT NULL DEFAULT '["nfo","tmdb"]',
-			created_at TIMESTAMP NOT NULL
+			created_at TIMESTAMP NOT NULL,
+			poster_mode TEXT NOT NULL DEFAULT 'auto',
+			poster_path TEXT NOT NULL DEFAULT ''
 		)`,
 		// The places one library scans. A library used to be bound to a single
 		// source; the row in `libraries` still names the first of these, so every
@@ -339,6 +346,8 @@ func (s *Store) migrateBangumiSchema() error {
 		{"bangumi_sync_jobs", "episode_number", `ALTER TABLE bangumi_sync_jobs ADD COLUMN episode_number INTEGER NOT NULL DEFAULT 0`},
 		{"bangumi_sync_jobs", "account_generation", `ALTER TABLE bangumi_sync_jobs ADD COLUMN account_generation INTEGER NOT NULL DEFAULT 1`},
 		{"bangumi_sync_jobs", "lease_token", `ALTER TABLE bangumi_sync_jobs ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''`},
+		{"libraries", "poster_mode", `ALTER TABLE libraries ADD COLUMN poster_mode TEXT NOT NULL DEFAULT 'auto'`},
+		{"libraries", "poster_path", `ALTER TABLE libraries ADD COLUMN poster_path TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, c := range columns {
 		if err := s.addColumn(c.table, c.name, c.ddl); err != nil {
@@ -1047,8 +1056,12 @@ func (s *Store) Sources() ([]models.Source, error) {
 // CreateLibrary inserts a library, and records where it scans. The first source
 // is the library's own source_id/path, which is what every older caller reads.
 func (s *Store) CreateLibrary(lib *models.Library) error {
-	res, err := s.DB.Exec(`INSERT INTO libraries (name, type, source_id, path, providers, created_at) VALUES (?,?,?,?,?,?)`,
-		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, time.Now())
+	if lib.PosterMode != "static" {
+		lib.PosterMode = "auto"
+	}
+	res, err := s.DB.Exec(`INSERT INTO libraries
+		(name, type, source_id, path, providers, created_at, poster_mode, poster_path) VALUES (?,?,?,?,?,?,?,?)`,
+		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, time.Now(), lib.PosterMode, lib.PosterPath)
 	if err != nil {
 		return err
 	}
@@ -1061,8 +1074,12 @@ func (s *Store) CreateLibrary(lib *models.Library) error {
 }
 
 func (s *Store) UpdateLibrary(lib *models.Library) error {
-	_, err := s.DB.Exec(`UPDATE libraries SET name=?, type=?, source_id=?, path=?, providers=? WHERE id=?`,
-		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.ID)
+	if lib.PosterMode != "static" {
+		lib.PosterMode = "auto"
+	}
+	_, err := s.DB.Exec(`UPDATE libraries SET name=?, type=?, source_id=?, path=?, providers=?,
+		poster_mode=?, poster_path=? WHERE id=?`,
+		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.PosterMode, lib.PosterPath, lib.ID)
 	return err
 }
 
@@ -1159,10 +1176,52 @@ func (s *Store) DeleteLibrary(id int64) error {
 	return err
 }
 
+// LibraryArtwork returns the cached image filename to show for a library card.
+// Libraries have no artwork of their own, so it borrows the newest item's
+// poster (or backdrop): real art from this library, not a generated image.
+func (s *Store) LibraryArtwork(lib *models.Library, kind string) (string, error) {
+	// A library set to a fixed cover keeps it; "auto" (and backdrops, which have
+	// no picker) borrow the newest cached artwork from the library's own items.
+	if kind == "primary" && lib.PosterMode == "static" && lib.PosterPath != "" {
+		return lib.PosterPath, nil
+	}
+	return s.LibraryAutoArtwork(lib.ID, kind)
+}
+
+// LibraryAutoArtwork is the newest item artwork in the library: what "自动获取"
+// pins when the user asks for a cover without picking a file.
+func (s *Store) LibraryAutoArtwork(libraryID int64, kind string) (string, error) {
+	column := "poster_path"
+	if kind == "backdrop" {
+		column = "backdrop_path"
+	}
+	var name string
+	err := s.DB.QueryRow(`SELECT `+column+` FROM items
+		WHERE library_id=? AND `+column+` != ''
+		ORDER BY added_at DESC, id DESC LIMIT 1`, libraryID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
+}
+
+// SetLibraryPoster stores the cover choice: "auto" clears the pinned file.
+func (s *Store) SetLibraryPoster(libraryID int64, mode, name string) error {
+	_, err := s.DB.Exec(`UPDATE libraries SET poster_mode=?, poster_path=? WHERE id=?`, mode, name, libraryID)
+	return err
+}
+
+// libraryCols and scanLibrary keep the two shapes in step as columns are added.
+const libraryCols = `id, name, type, source_id, path, providers, created_at, poster_mode, poster_path`
+
+func scanLibrary(scan func(...any) error, lib *models.Library) error {
+	return scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers,
+		&lib.CreatedAt, &lib.PosterMode, &lib.PosterPath)
+}
+
 func (s *Store) LibraryByID(id int64) (*models.Library, error) {
 	lib := &models.Library{}
-	err := s.DB.QueryRow(`SELECT id, name, type, source_id, path, providers, created_at FROM libraries WHERE id=?`, id).
-		Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.CreatedAt)
+	err := scanLibrary(s.DB.QueryRow(`SELECT `+libraryCols+` FROM libraries WHERE id=?`, id).Scan, lib)
 	if err != nil {
 		return nil, err
 	}
@@ -1177,9 +1236,8 @@ func (s *Store) LibraryByID(id int64) (*models.Library, error) {
 func (s *Store) EnsureBrowseLibrary(sourceID int64) (*models.Library, error) {
 	name := fmt.Sprintf("__browse__-%d", sourceID)
 	lib := &models.Library{}
-	err := s.DB.QueryRow(`SELECT id, name, type, source_id, path, providers, created_at
-		FROM libraries WHERE name = ? AND source_id = ?`, name, sourceID).
-		Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.CreatedAt)
+	err := scanLibrary(s.DB.QueryRow(`SELECT `+libraryCols+`
+		FROM libraries WHERE name = ? AND source_id = ?`, name, sourceID).Scan, lib)
 	if err == nil {
 		return lib, nil
 	}
@@ -1194,7 +1252,7 @@ func (s *Store) EnsureBrowseLibrary(sourceID int64) (*models.Library, error) {
 }
 
 func (s *Store) Libraries() ([]models.Library, error) {
-	rows, err := s.DB.Query(`SELECT id, name, type, source_id, path, providers, created_at FROM libraries ORDER BY id`)
+	rows, err := s.DB.Query(`SELECT ` + libraryCols + ` FROM libraries ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,7 +1260,7 @@ func (s *Store) Libraries() ([]models.Library, error) {
 	var out []models.Library
 	for rows.Next() {
 		var lib models.Library
-		if err := rows.Scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers, &lib.CreatedAt); err != nil {
+		if err := scanLibrary(rows.Scan, &lib); err != nil {
 			return nil, err
 		}
 		out = append(out, lib)
@@ -1810,12 +1868,23 @@ func (s *Store) SaveProgress(p *models.Progress) error {
 		ON CONFLICT(user_id, file_id) DO UPDATE SET position=excluded.position, duration=excluded.duration,
 		item_id=excluded.item_id, updated_at=excluded.updated_at`,
 		p.UserID, p.FileID, p.ItemID, p.Position, p.Duration, time.Now())
+	if err != nil {
+		return err
+	}
+	// Watching again overrides "remove from Continue Watching": the item is
+	// deliberately back in the row, so the hidden marker must not survive it.
+	_, err = s.DB.Exec(`DELETE FROM resume_hidden WHERE user_id=? AND item_id=?`, p.UserID, p.ItemID)
 	return err
 }
 
 func (s *Store) ProgressByUser(userID int64) ([]models.Progress, error) {
+	// Items the user removed from Continue Watching stay out of both the Emby
+	// resume row and the web home row. The progress row itself is untouched, so
+	// the position and watched state survive; resuming playback clears the flag.
 	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, updated_at
-		FROM progress WHERE user_id=? AND position > 30 ORDER BY updated_at DESC LIMIT 50`, userID)
+		FROM progress p WHERE p.user_id=? AND p.position > 30
+		AND NOT EXISTS (SELECT 1 FROM resume_hidden h WHERE h.user_id=p.user_id AND h.item_id=p.item_id)
+		ORDER BY updated_at DESC LIMIT 50`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1840,6 +1909,18 @@ func (s *Store) ProgressForFile(userID, fileID int64) (*models.Progress, error) 
 		return nil, err
 	}
 	return p, nil
+}
+
+// HideFromResume remembers that a user removed an item from Continue Watching.
+// Progress is left untouched so the watched/played state and the exact resume
+// position survive; only the resume listing skips the item.
+func (s *Store) HideFromResume(userID, itemID int64, hide bool) error {
+	if !hide {
+		_, err := s.DB.Exec(`DELETE FROM resume_hidden WHERE user_id=? AND item_id=?`, userID, itemID)
+		return err
+	}
+	_, err := s.DB.Exec(`INSERT OR IGNORE INTO resume_hidden (user_id, item_id) VALUES (?,?)`, userID, itemID)
+	return err
 }
 
 // EmbyUserConfiguration returns the stored JSON object, or "" when the user

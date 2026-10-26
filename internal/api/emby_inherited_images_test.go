@@ -69,17 +69,28 @@ func TestEmbyInheritedImagesResolveToActualOwner(t *testing.T) {
 			t.Fatalf("tokenless inherited image %s/%s = %d: %q", id, kind, code, raw)
 		}
 	}
-	checkInherited := func(item, owner *models.Item) {
+	// inheritPrimary is false for episodes: a still-less episode must not borrow
+	// the series poster, or every episode card shows the same cover.
+	checkInherited := func(item, owner *models.Item, inheritPrimary bool) {
 		t.Helper()
 		dto := getDetail(item)
 		if len(dto["ImageTags"].(map[string]any)) != 0 || len(dto["BackdropImageTags"].([]any)) != 0 {
 			t.Fatalf("inherited images advertised as self-owned: %v", dto)
 		}
-		if dto["PrimaryImageItemId"] != embyID(owner.ID) || dto["ParentBackdropItemId"] != embyID(owner.ID) {
-			t.Fatalf("incorrect nearest owner: %v", dto)
+		if dto["ParentBackdropItemId"] != embyID(owner.ID) {
+			t.Fatalf("incorrect backdrop owner: %v", dto)
 		}
-		getImage(dto["PrimaryImageItemId"].(string), "Primary", dto["PrimaryImageTag"].(string), owner.PosterPath)
 		getImage(dto["ParentBackdropItemId"].(string), "Backdrop", dto["ParentBackdropImageTags"].([]any)[0].(string), owner.BackdropPath)
+		if !inheritPrimary {
+			if _, ok := dto["PrimaryImageItemId"]; ok {
+				t.Fatalf("episode borrowed an ancestor poster: %v", dto)
+			}
+		} else {
+			if dto["PrimaryImageItemId"] != embyID(owner.ID) {
+				t.Fatalf("incorrect nearest owner: %v", dto)
+			}
+			getImage(dto["PrimaryImageItemId"].(string), "Primary", dto["PrimaryImageTag"].(string), owner.PosterPath)
+		}
 		if dto["SeriesId"] != embyID(show.ID) {
 			t.Fatalf("missing series owner: %v", dto)
 		}
@@ -90,15 +101,15 @@ func TestEmbyInheritedImagesResolveToActualOwner(t *testing.T) {
 			}
 		}
 	}
-	// Season without artwork and episode through that season both use series.
-	checkInherited(season, show)
-	checkInherited(ep, show)
-	// Once the immediate parent has artwork it wins, not the more distant series.
+	// A season without artwork uses the series poster; an episode never does.
+	checkInherited(season, show, true)
+	checkInherited(ep, show, false)
+	// Once the immediate parent has artwork it owns the episode's backdrop.
 	season.PosterPath, season.BackdropPath = "season-poster.png", "season-backdrop.png"
 	if err := s.Store.UpdateItemMeta(season); err != nil {
 		t.Fatal(err)
 	}
-	checkInherited(ep, season)
+	checkInherited(ep, season, false)
 	// Own artwork is never replaced by inherited references.
 	ep.PosterPath, ep.BackdropPath = "episode-poster.png", "episode-backdrop.png"
 	if err := s.Store.UpdateItemMeta(ep); err != nil {
