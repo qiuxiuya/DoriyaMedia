@@ -332,7 +332,7 @@ func (s *Server) Handler() http.Handler {
 	// static SPA
 	mux.HandleFunc("/", s.serveStatic)
 
-	return logMiddleware(mux)
+	return logMiddleware(s.embyMiddleware(mux))
 }
 
 func logMiddleware(next http.Handler) http.Handler {

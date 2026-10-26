@@ -96,6 +96,18 @@ func (s *Store) migrate() error {
 			created_at TIMESTAMP NOT NULL,
 			last_login_at TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS emby_favorites (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+			PRIMARY KEY (user_id, item_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS emby_display_preferences (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			preference_id TEXT NOT NULL,
+			client TEXT NOT NULL,
+			data TEXT NOT NULL,
+			PRIMARY KEY (user_id, preference_id, client)
+		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			token TEXT PRIMARY KEY,
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
