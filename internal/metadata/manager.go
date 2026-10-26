@@ -182,13 +182,23 @@ func preferCN(cn, orig string) string {
 
 func providers(lib *models.Library) []string {
 	var out []string
-	if lib.Providers != "" {
+	if lib != nil && lib.Providers != "" {
 		_ = json.Unmarshal([]byte(lib.Providers), &out)
 	}
 	if len(out) == 0 {
 		out = []string{"nfo", "bgm", "tmdb"}
 	}
 	return out
+}
+
+// providerEnabled reports whether the library configured this scraping source.
+func providerEnabled(lib *models.Library, name string) bool {
+	for _, p := range providers(lib) {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- rate limit ----------
@@ -315,6 +325,11 @@ func (m *Manager) enrichSeries(ctx context.Context, drv source.Driver, lib *mode
 }
 
 func (m *Manager) enrichMovie(ctx context.Context, drv source.Driver, lib *models.Library, it *models.Item) {
+	// The picture is only a cache file, and the database can outlive it (images/
+	// cleared, data restored from a backup without it). Restore what the item
+	// already has an id for before anything can return early — a rescan has to
+	// write the file again instead of leaving the movie on a placeholder forever.
+	m.restoreArtwork(ctx, lib, it)
 	if it.TMDBID != 0 && it.PosterPath != "" && it.Overview != "" {
 		return
 	}
@@ -341,6 +356,9 @@ func (m *Manager) enrichMovie(ctx context.Context, drv source.Driver, lib *model
 }
 
 func (m *Manager) enrichShow(ctx context.Context, drv source.Driver, lib *models.Library, show *models.Item) {
+	// See enrichMovie: restore artwork whose cache file is gone before anything
+	// below can return early.
+	m.restoreArtwork(ctx, lib, show)
 	if show.TMDBID != 0 && show.PosterPath != "" && show.Overview != "" {
 		return
 	}
@@ -383,10 +401,22 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 	}
 	// Editions scraped before the naming fix kept every episode's still under
 	// the show's TMDB id, so they all pointed at one file. Treating such a name
-	// as missing lets a rescan write this episode its own copy.
-	if keepName != "" && ep.StillPath != "" && !isSharedTMDBImageName(ep.StillPath, "still") {
+	// as missing lets a rescan write this episode its own copy. A still whose
+	// file was deleted with the images directory is missing in the same sense:
+	// the pass has to run again, or the card shows a placeholder for good.
+	if keepName != "" && m.stillUsable(ep) {
 		return
 	}
+	// stillLost marks a still the item claims to have but cannot show. Only then
+	// is a pass that fills metadata (nfo name, Bangumi title) still worth
+	// continuing: an episode that never had a still must not turn every scan
+	// into a TMDB season request.
+	stillLost := ep.StillPath != "" && !m.stillUsable(ep)
+	// restoreOnly is the one pass that exists solely for a lost picture: the item
+	// was complete apart from that file. Its metadata — in particular a name the
+	// source gave the episode — is what the library already shows, so nothing but
+	// the picture may be written.
+	restoreOnly := stillLost && keepName != ""
 	defer func() {
 		if keepName != "" && ep.Name != keepName {
 			ep.Name = keepName
@@ -401,15 +431,17 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 	// provider order decides who wins: nfo (precise, local) → Bangumi (Chinese
 	// titles for anime) → TMDB season data.
 	for _, p := range providers(lib) {
+		hit := false
 		switch p {
 		case "nfo":
-			if m.tryEpisodeNFO(ctx, drv, ep, &files[0]) {
-				return
-			}
+			hit = m.tryEpisodeNFO(ctx, drv, ep, &files[0])
 		case "bgm":
-			if m.tryEpisodeBGM(ctx, ep, show) {
-				return
-			}
+			hit = m.tryEpisodeBGM(ctx, ep, show)
+		}
+		// A restore is not done until the picture is back: a provider that named
+		// the episode but had no still of its own is not the end of the pass.
+		if hit && (!stillLost || m.stillUsable(ep)) {
+			return
 		}
 	}
 	if show.TMDBID > 0 && m.tmdb().Enabled() {
@@ -418,11 +450,17 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 		if err == nil && sd != nil {
 			for _, e := range sd.Episodes {
 				if e.EpisodeNumber == ep.Episode {
-					ep.Name = orDefaultStr(e.Name, ep.Name)
-					ep.Overview = e.Overview
-					ep.AirDate = e.AirDate
+					// A name the source gave this episode is kept; TMDB is only
+					// asked for the still in that case.
+					if !restoreOnly {
+						ep.Name = orDefaultStr(e.Name, ep.Name)
+						ep.Overview = e.Overview
+						ep.AirDate = e.AirDate
+					}
 					if e.StillPath != "" {
-						ep.StillPath = m.saveTMDBImage(ctx, ep.ID, "still", e.StillPath, "w300")
+						if name := m.saveTMDBImage(ctx, ep.ID, "still", e.StillPath, "w300"); name != "" {
+							ep.StillPath = name
+						}
 					}
 					_ = m.Store.UpdateItemMeta(ep)
 					return
@@ -1201,8 +1239,12 @@ func (m *Manager) applyBGM(ctx context.Context, it *models.Item, sub *BgmSubject
 		raw, _ := json.Marshal(sub.Genres)
 		it.Genres = string(raw)
 	}
-	if sub.PosterURL != "" && it.PosterPath == "" {
-		it.PosterPath = m.saveBGMImage(ctx, it.ID, "poster", sub.PosterURL)
+	// A stored name whose file is gone is not a poster any more: the scan is
+	// what restores it.
+	if sub.PosterURL != "" && (it.PosterPath == "" || m.imageFileMissing(it.PosterPath)) {
+		if name := m.saveBGMImage(ctx, it.ID, "poster", sub.PosterURL); name != "" {
+			it.PosterPath = name
+		}
 	}
 	return m.Store.UpdateItemMeta(it)
 }
@@ -1259,6 +1301,96 @@ func normTitle(s string) string {
 }
 
 // ---------- images ----------
+
+// imageFileMissing reports whether a stored image name no longer has a file in
+// the images directory. The picture is a cache: the database keeps the name, and
+// the UI falls back to a placeholder when the file cannot be served. A cleared
+// images/ directory — or a database restored from a backup without it — leaves
+// every item pointing at a picture that is not there, and only a scan can write
+// it again.
+//
+// An empty name means "no image", not "missing image": whether one could be
+// fetched is the caller's question, not this helper's.
+func (m *Manager) imageFileMissing(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(m.Cfg.ImagesDir(), filepath.Base(name)))
+	// An empty file is a write that never finished, not a picture; it has to be
+	// fetched again just like an absent one, or the card stays broken.
+	return err != nil || fi.Size() == 0
+}
+
+// stillUsable reports whether an episode has a still that can be served. A name
+// from the old shared-tmdb_<id>_still scheme is not one: every episode of a show
+// was written to that file, so it shows another episode's picture.
+func (m *Manager) stillUsable(ep *models.Item) bool {
+	return ep.StillPath != "" &&
+		!m.imageFileMissing(ep.StillPath) &&
+		!isSharedTMDBImageName(ep.StillPath, "still")
+}
+
+// restoreArtwork re-downloads artwork whose file disappeared, using the provider
+// ids the item already carries. It deliberately does not search again: a rescan
+// that is only restoring a deleted picture must not re-identify — and possibly
+// rename — an item that is already pinned.
+//
+// Only the library's own scraping sources are asked, so a library configured for
+// local artwork does not suddenly get TMDB pictures because its nfo named a TMDB
+// id. A download that fails leaves the stored name untouched: writing an empty
+// name would drop the item back to "never identified" and make the next scan
+// search for it, which is a much bigger change than a missing thumbnail.
+func (m *Manager) restoreArtwork(ctx context.Context, lib *models.Library, it *models.Item) bool {
+	posterGone := m.imageFileMissing(it.PosterPath)
+	backdropGone := m.imageFileMissing(it.BackdropPath)
+	if !posterGone && !backdropGone {
+		return false
+	}
+	beforePoster, beforeBackdrop := it.PosterPath, it.BackdropPath
+
+	// Bangumi first: when a title carries both ids, the poster it showed is
+	// usually Bangumi's — applyBGM sets one and TMDB never overrides a poster
+	// that is already there.
+	if posterGone && it.BGMID > 0 && providerEnabled(lib, "bgm") && m.bgm().Enabled() {
+		if sub, err := m.bgm().Subject(ctx, it.BGMID); err == nil && sub != nil && sub.PosterURL != "" {
+			if name := m.saveBGMImage(ctx, it.ID, "poster", sub.PosterURL); name != "" {
+				it.PosterPath = name
+			}
+		}
+	}
+
+	posterGone, backdropGone = m.imageFileMissing(it.PosterPath), m.imageFileMissing(it.BackdropPath)
+	if it.TMDBID > 0 && (posterGone || backdropGone) && providerEnabled(lib, "tmdb") && m.tmdb().Enabled() {
+		throttle()
+		var poster, backdrop string
+		if it.Type == "movie" {
+			if d, err := m.tmdb().MovieDetail(ctx, it.TMDBID); err == nil && d != nil {
+				poster, backdrop = d.PosterPath, d.BackdropPath
+			}
+		} else {
+			if d, err := m.tmdb().TVDetail(ctx, it.TMDBID); err == nil && d != nil {
+				poster, backdrop = d.PosterPath, d.BackdropPath
+			}
+		}
+		if posterGone && poster != "" {
+			if name := m.saveTMDBImage(ctx, it.ID, "poster", poster, "w500"); name != "" {
+				it.PosterPath = name
+			}
+		}
+		if backdropGone && backdrop != "" {
+			if name := m.saveTMDBImage(ctx, it.ID, "backdrop", backdrop, "w1280"); name != "" {
+				it.BackdropPath = name
+			}
+		}
+	}
+
+	if beforePoster == it.PosterPath && beforeBackdrop == it.BackdropPath {
+		return false
+	}
+	_ = m.Store.UpdateItemMeta(it)
+	return true
+}
 
 func (m *Manager) saveTMDBImage(ctx context.Context, itemID int64, kind, path, size string) string {
 	t := m.tmdb()
