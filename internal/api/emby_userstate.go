@@ -132,28 +132,28 @@ func (s *Server) embyPlayed(w http.ResponseWriter, r *http.Request, u *models.Us
 		fail(w, 404, "Item not found")
 		return
 	}
+	// A show or season is a folder: the client marks every episode watched when
+	// the user checks the whole series/season. Acting on the folder's own files
+	// would 400, so descend into its episodes instead.
 	files, err := s.Store.FilesByItem(itemID)
 	if err != nil {
 		fail(w, 500, "Cannot load media files")
 		return
+	}
+	folder := it.Type == "show" || it.Type == "season"
+	if len(files) == 0 && folder {
+		files, err = s.embyDescendantFiles(itemID, map[int64]bool{itemID: true}, 0)
+		if err != nil {
+			fail(w, 500, "Cannot load media files")
+			return
+		}
 	}
 	if len(files) == 0 {
 		fail(w, 400, "Only playable items can be marked watched")
 		return
 	}
 	played := r.Method == "POST"
-	for _, f := range files {
-		duration := embyProbe(&f).Duration()
-		if duration <= 0 {
-			if p, e := s.Store.ProgressForFile(u.ID, f.ID); e == nil {
-				duration = p.Duration
-			}
-		}
-		if played && duration <= 0 {
-			fail(w, 409, "Play or probe the item before marking watched")
-			return
-		}
-	}
+	marked := 0
 	for _, f := range files {
 		if !played {
 			if _, err := s.Store.DB.Exec("DELETE FROM progress WHERE user_id=? AND file_id=?", u.ID, f.ID); err != nil {
@@ -164,16 +164,80 @@ func (s *Server) embyPlayed(w http.ResponseWriter, r *http.Request, u *models.Us
 		}
 		duration := embyProbe(&f).Duration()
 		if duration <= 0 {
-			p, _ := s.Store.ProgressForFile(u.ID, f.ID)
-			duration = p.Duration
+			if p, e := s.Store.ProgressForFile(u.ID, f.ID); e == nil {
+				duration = p.Duration
+			}
 		}
-		if err := s.Store.SaveProgress(&models.Progress{UserID: u.ID, FileID: f.ID, ItemID: itemID, Position: duration, Duration: duration}); err != nil {
+		// Episodes that were never probed cannot be marked; a folder still
+		// succeeds as long as at least one episode could be.
+		if duration <= 0 {
+			continue
+		}
+		if err := s.Store.SaveProgress(&models.Progress{UserID: u.ID, FileID: f.ID, ItemID: f.ItemID, Position: duration, Duration: duration}); err != nil {
 			fail(w, 500, "Cannot save watched state")
 			return
 		}
+		marked++
 		if s.BangumiSync != nil {
 			_ = s.BangumiSync.EnqueueWatched(u.ID, f.ID)
 		}
 	}
-	writeJSON(w, 200, s.embyItem(it, u, r)["UserData"])
+	if played && marked == 0 {
+		fail(w, 409, "Play or probe the item before marking watched")
+		return
+	}
+	ud := s.embyItem(it, u, r)["UserData"].(map[string]any)
+	if folder {
+		ud["Played"] = s.embyFolderPlayed(u.ID, files)
+		if ud["Played"] == true {
+			ud["PlayedPercentage"] = 100.0
+		}
+	}
+	writeJSON(w, 200, ud)
+}
+
+// embyDescendantFiles collects the media files of every descendant item. It
+// walks the tree itself because only the files matter here, and it guards
+// against parent cycles so a corrupt library cannot loop forever.
+func (s *Server) embyDescendantFiles(parentID int64, seen map[int64]bool, depth int) ([]models.MediaFile, error) {
+	if depth > 8 {
+		return nil, nil
+	}
+	children, err := s.Store.ItemChildren(parentID)
+	if err != nil {
+		return nil, err
+	}
+	var out []models.MediaFile
+	for _, child := range children {
+		if seen[child.ID] {
+			continue
+		}
+		seen[child.ID] = true
+		files, err := s.Store.FilesByItem(child.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, files...)
+		nested, err := s.embyDescendantFiles(child.ID, seen, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, nested...)
+	}
+	return out, nil
+}
+
+// embyFolderPlayed reports whether every episode file of a shown folder has
+// been watched by this user.
+func (s *Server) embyFolderPlayed(userID int64, files []models.MediaFile) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		p, err := s.Store.ProgressForFile(userID, f.ID)
+		if err != nil || p.Duration <= 0 || p.Position*10 < p.Duration*9 {
+			return false
+		}
+	}
+	return true
 }

@@ -137,7 +137,11 @@ func (s *Server) embyItem(it *models.Item, u *models.User, r *http.Request) map[
 				out["ParentBackdropImageTags"] = []string{s.embyImageAccessTag(parent.ID, "backdrop", parent.BackdropPath)}
 			}
 		}
-		if (it.Type == "season" || it.Type == "episode") && primaryImage == "" && parent.PosterPath != "" {
+		// Seasons without their own artwork show the series poster. Episodes do
+		// not: reusing the series poster there gave every episode in a show the
+		// same cover, which is worse than no still at all. Clients fall back to
+		// their own placeholder until a real still is cached.
+		if it.Type == "season" && primaryImage == "" && parent.PosterPath != "" {
 			if _, exists := out["PrimaryImageItemId"]; !exists {
 				out["PrimaryImageItemId"] = embyID(parent.ID)
 				out["PrimaryImageTag"] = s.embyImageAccessTag(parent.ID, "primary", parent.PosterPath)
@@ -219,7 +223,20 @@ func (s *Server) embyItemDetail(w http.ResponseWriter, r *http.Request, u *model
 		fail(w, 404, "Item not found")
 		return
 	}
-	embyWriteDetail(w, r, s.embyItem(it, u, r))
+	dto := s.embyItem(it, u, r)
+	// A show or season is watched only when all of its episodes are. Computing
+	// this per detail request keeps list pages cheap while still giving the
+	// detail header the tick the official clients look for.
+	if it.Type == "show" || it.Type == "season" {
+		if files, err := s.embyDescendantFiles(it.ID, map[int64]bool{it.ID: true}, 0); err == nil && len(files) > 0 {
+			ud := dto["UserData"].(map[string]any)
+			ud["Played"] = s.embyFolderPlayed(u.ID, files)
+			if ud["Played"] == true {
+				ud["PlayedPercentage"] = 100.0
+			}
+		}
+	}
+	embyWriteDetail(w, r, dto)
 }
 
 // embyItemAncestors returns the nearest parent first, followed by the library.
@@ -315,6 +332,23 @@ func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User
 			where = append(where, "0")
 		} else {
 			where = append(where, "i.type IN ("+strings.Join(marks, ",")+")")
+		}
+	}
+	// Emby's home screen asks the same resume endpoint twice: "Continue
+	// Watching" with MediaTypes=Video and "Continue Listening" with
+	// MediaTypes=Audio. Ignoring the parameter put the same films and episodes
+	// in both rows, so an audiobook row showed video progress.
+	if v := embyQuery(r, "MediaTypes"); v != "" {
+		video := false
+		for _, part := range strings.Split(strings.ToLower(v), ",") {
+			if strings.TrimSpace(part) == "video" {
+				video = true
+			}
+		}
+		// Every item this adapter exposes is a video (film, series, season or
+		// episode); nothing here is audio, photo, book or game.
+		if !video {
+			where = append(where, "0")
 		}
 	}
 	if v := embyQuery(r, "SeasonId"); v != "" {

@@ -63,7 +63,7 @@ func (s *Server) embySystemInfo() map[string]any {
 	return map[string]any{"Id": s.embyServerID(), "ServerName": "DoriyaMedia", "Version": "4.8.0.0", "OperatingSystem": "DoriyaMedia", "ProductName": "DoriyaMedia", "StartupWizardCompleted": true, "SupportsLibraryMonitor": false, "SupportsLocalPortConfiguration": false}
 }
 func (s *Server) embyUser(u *models.User) map[string]any {
-	return map[string]any{"Id": embyID(u.ID), "Name": u.Name, "ServerId": s.embyServerID(), "HasPassword": true, "HasConfiguredPassword": true, "EnableAutoLogin": false, "Configuration": map[string]any{"PlayDefaultAudioTrack": true, "SubtitleMode": "Default", "OrderedViews": []string{}, "MyMediaExcludes": []string{}, "LatestItemsExcludes": []string{}, "GroupedFolders": []string{}, "ExcludeFoldersFromGrouping": []string{}, "HidePlayedInLatest": true, "RememberAudioSelections": true, "RememberSubtitleSelections": true}, "Policy": map[string]any{"IsAdministrator": u.IsAdmin(), "IsDisabled": !u.CanLogin(), "EnableMediaPlayback": true, "EnableLiveTvAccess": false, "EnableLiveTvManagement": false, "EnableAudioPlaybackTranscoding": false, "EnableVideoPlaybackTranscoding": false, "EnableContentDeletion": false, "EnableAllFolders": true}}
+	return map[string]any{"Id": embyID(u.ID), "Name": u.Name, "ServerId": s.embyServerID(), "HasPassword": true, "HasConfiguredPassword": true, "EnableAutoLogin": false, "Configuration": s.embyUserConfiguration(u), "Policy": map[string]any{"IsAdministrator": u.IsAdmin(), "IsDisabled": !u.CanLogin(), "EnableMediaPlayback": true, "EnableLiveTvAccess": false, "EnableLiveTvManagement": false, "EnableAudioPlaybackTranscoding": false, "EnableVideoPlaybackTranscoding": false, "EnableContentDeletion": false, "EnableAllFolders": true}}
 }
 
 func (s *Server) embyMiddleware(next http.Handler) http.Handler {
@@ -128,6 +128,8 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 		writeJSON(w, 200, []any{s.embySession(r, u)})
 	})
 	secured("GET /branding/configuration", func(w http.ResponseWriter, r *http.Request, u *models.User) { writeJSON(w, 200, map[string]any{}) })
+	secured("POST /users/{user}/configuration", s.embyUserConfigurationSave)
+	secured("POST /users/{user}/configuration/partial", s.embyUserConfigurationSave)
 	secured("GET /displaypreferences/{id}", s.embyDisplayPreferences)
 	secured("POST /displaypreferences/{id}", s.embyDisplayPreferences)
 	s.embyRegisterItems(secured)
@@ -138,16 +140,26 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(strings.ToLower(r.URL.Path), "/")
 		prefixed := false
-		for _, prefix := range []string{"/emby", "/mediabrowser"} {
-			if path == prefix || strings.HasPrefix(path, prefix+"/") {
-				path = strings.TrimPrefix(path, prefix)
-				prefixed = true
+		// Strip the base path at most twice: some clients prepend /emby to URLs
+		// the server already built, yielding /emby/emby/Videos/... . Accepting
+		// that keeps an older client working without weakening routing.
+		for pass := 0; pass < 2; pass++ {
+			stripped := false
+			for _, prefix := range []string{"/emby", "/mediabrowser"} {
+				if path == prefix || strings.HasPrefix(path, prefix+"/") {
+					path = strings.TrimPrefix(path, prefix)
+					prefixed = true
+					stripped = true
+					break
+				}
+			}
+			if !stripped {
 				break
 			}
 		}
 		root := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
 		known := false
-		for _, v := range []string{"system", "users", "items", "shows", "videos", "sessions", "library", "branding", "displaypreferences", "genres", "persons", "customcssjs", "livetv"} {
+		for _, v := range []string{"system", "users", "items", "shows", "videos", "sessions", "library", "branding", "displaypreferences", "genres", "persons", "customcssjs", "livetv", "localization", "scheduledtasks", "web"} {
 			if root == v {
 				known = true
 				break

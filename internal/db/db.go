@@ -96,6 +96,10 @@ func (s *Store) migrate() error {
 			created_at TIMESTAMP NOT NULL,
 			last_login_at TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS emby_user_configuration (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			data TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS emby_favorites (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -1838,8 +1842,24 @@ func (s *Store) ProgressForFile(userID, fileID int64) (*models.Progress, error) 
 	return p, nil
 }
 
-// ---------- bangumi accounts and sync queue ----------
+// EmbyUserConfiguration returns the stored JSON object, or "" when the user
+// has never saved settings. Callers merge it over protocol defaults.
+func (s *Store) EmbyUserConfiguration(userID int64) (string, error) {
+	var data string
+	err := s.DB.QueryRow(`SELECT data FROM emby_user_configuration WHERE user_id=?`, userID).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return data, err
+}
 
+func (s *Store) SaveEmbyUserConfiguration(userID int64, data string) error {
+	_, err := s.DB.Exec(`INSERT INTO emby_user_configuration (user_id, data) VALUES (?,?)
+		ON CONFLICT(user_id) DO UPDATE SET data=excluded.data`, userID, data)
+	return err
+}
+
+// ---------- bangumi accounts and sync queue ----------
 func (s *Store) BangumiAccountByUser(userID int64) (*models.BangumiAccount, error) {
 	a := &models.BangumiAccount{}
 	var lastSync sql.NullTime
