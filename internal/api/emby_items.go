@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"doriyamedia/internal/metadata"
 	"doriyamedia/internal/models"
 )
 
@@ -295,9 +296,15 @@ func (s *Server) embyItemAncestors(w http.ResponseWriter, r *http.Request, u *mo
 	writeJSON(w, 200, out)
 }
 
+// embyVisibleItems is the predicate every list, latest, resume and search query
+// starts from: only film and series libraries, and never the hidden file-browser
+// scratchpad libraries. Keeping it in one place stops a new endpoint from
+// quietly exposing the scratchpad.
+const embyVisibleItems = "i.library_id IN (SELECT id FROM libraries WHERE type IN ('movie','series') AND substr(name,1,10) != '__browse__')"
+
 // Query values are always bound; only fixed, allow-listed SQL fragments are used.
 func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User) {
-	where := []string{"i.library_id IN (SELECT id FROM libraries WHERE type IN ('movie','series') AND substr(name,1,10) != '__browse__')"}
+	where := []string{embyVisibleItems}
 	args := []any{}
 	parent := embyQuery(r, "ParentId")
 	recursive := strings.EqualFold(embyQuery(r, "Recursive"), "true") || strings.HasSuffix(r.URL.Path, "/latest")
@@ -369,9 +376,15 @@ func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User
 		where = append(where, "i.season=?")
 		args = append(args, embyNumber(v))
 	}
-	if v := embyQuery(r, "SearchTerm"); v != "" {
-		where = append(where, "(i.name LIKE ? OR i.original_title LIKE ?)")
-		args = append(args, "%"+v+"%", "%"+v+"%")
+	if v := strings.TrimSpace(embyQuery(r, "SearchTerm")); v != "" {
+		// Match the same spellings the search box does, so a Traditional query
+		// that finds a hint also finds it in the results grid.
+		conds := []string{}
+		for _, spelling := range metadata.SearchVariants(v) {
+			conds = append(conds, "(i.name LIKE ? OR i.original_title LIKE ?)")
+			args = append(args, "%"+spelling+"%", "%"+spelling+"%")
+		}
+		where = append(where, "("+strings.Join(conds, " OR ")+")")
 	}
 	if v := embyQuery(r, "Ids"); v != "" {
 		marks := []string{}
