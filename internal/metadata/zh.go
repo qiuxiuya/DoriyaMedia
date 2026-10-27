@@ -58,3 +58,15 @@ func searchSpellings(s string) []string {
 	}
 	return out
 }
+
+// SearchVariants exposes the spellings a user's query should be matched under:
+// the term itself, then its Simplified form when the query is Traditional.
+//
+// Stored titles are whatever the provider said, and TMDB/Bangumi state Chinese
+// names in Simplified, so a Hong Kong or Taiwan user typing 鬼滅之刃 would
+// otherwise miss a library entry named 鬼灭之刃. The reverse direction (a
+// Simplified query against a Traditional stored title) would need a folded
+// column on items; it is not covered here.
+func SearchVariants(s string) []string {
+	return searchSpellings(s)
+}

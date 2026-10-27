@@ -133,6 +133,7 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 	secured("GET /displaypreferences/{id}", s.embyDisplayPreferences)
 	secured("POST /displaypreferences/{id}", s.embyDisplayPreferences)
 	s.embyRegisterItems(secured)
+	s.embyRegisterSearch(secured)
 	s.embyRegisterSupplemental(secured)
 	s.embyRegisterImages(mux)
 	s.embyRegisterPlayback(secured)
@@ -159,7 +160,10 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 		}
 		root := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
 		known := false
-		for _, v := range []string{"system", "users", "items", "shows", "videos", "sessions", "library", "branding", "displaypreferences", "genres", "persons", "customcssjs", "livetv", "localization", "scheduledtasks", "web"} {
+		// "search" belongs here for the same reason as "items": clients call
+		// /Search/Hints without the /emby prefix, and it must reach the adapter
+		// rather than fall through to the web application.
+		for _, v := range []string{"system", "users", "items", "shows", "videos", "sessions", "library", "branding", "displaypreferences", "genres", "persons", "customcssjs", "livetv", "localization", "scheduledtasks", "web", "search"} {
 			if root == v {
 				known = true
 				break
