@@ -1991,7 +1991,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <ExcludeKeywords v-model="cfg.exclude_keywords" />
                 <span class="hint">
                   命中的文件不会被导入媒体库——不当剧集、不当电影、不出卡片,也不会被刮削;文件浏览里仍然能播。
-                  下面的媒体库可以「跟随全局」或单独设一份。
+                  下面的媒体库可以「跟随全局」或单独设一份。用 /…/ 包起来就是正则,如 /(?i)^\[pv\d+\]$/。
                 </span>
               </div>
               <div class="field wide">
@@ -1999,7 +1999,8 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <ExcludeKeywords v-model="cfg.exclude_folders" kind="folder" />
                 <span class="hint">
                   按文件夹名匹配,任意一层目录命中,它下面的文件就一律不入库——不当剧集、不当电影、不出卡片,也不会被刮削;
-                  文件浏览里仍然能播。适合「特典」「Extras」「Sample」这类目录。两份名单默认都是空的,由你决定排除什么。
+                  文件浏览里仍然能播。适合「特典」「Extras」「Sample」这类目录。同样支持 /…/ 正则,如 /^(CD|DVD)\d+$/。
+                  两份名单默认都是空的,由你决定排除什么。
                 </span>
               </div>
             </div>
