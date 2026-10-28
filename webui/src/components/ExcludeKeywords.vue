@@ -2,9 +2,9 @@
 import { ref, computed } from 'vue'
 import AppIcon from './AppIcon.vue'
 
-// A settable exclusion list: the keywords a scan refuses to import. Entries are
-// chips so each one can be removed on its own — the defaults are only defaults,
-// and a user who wants NCED back deletes the word.
+// A settable exclusion list: the words a scan refuses to import. Entries are
+// chips so each one can be removed on its own — there are no built-in defaults,
+// so what is on screen is exactly what the user put there.
 const props = defineProps({
   // The list being edited.
   modelValue: { type: Array, default: () => [] },
@@ -13,12 +13,16 @@ const props = defineProps({
   // "inherit" | "custom". Omitted on the global form, which has nothing to
   // inherit from.
   mode: { type: String, default: '' },
+  // What the words are matched against: a file's name, or a folder's name. Only
+  // the wording differs — the list itself has the same shape either way.
+  kind: { type: String, default: 'file' },
 })
 const emit = defineEmits(['update:modelValue', 'update:mode'])
 
 const draft = ref('')
 const custom = computed(() => props.mode === 'custom')
 const effective = computed(() => (props.mode ? (custom.value ? props.modelValue : props.inherited) : props.modelValue))
+const isFolder = computed(() => props.kind === 'folder')
 
 function add() {
   const word = draft.value.trim()
@@ -69,12 +73,14 @@ function setMode(next) {
           v-if="!mode || custom" class="x" :title="`不再排除「${w}」`" @click="remove(w)"
         ><AppIcon name="close" :size="12" /></button>
       </span>
-      <span v-if="!effective.length" class="tiny muted">没有排除项——扫描会导入所有找到的文件。</span>
+      <span v-if="!effective.length" class="tiny muted">
+        {{ isFolder ? '没有排除的文件夹——扫描会进入所有目录。' : '没有排除项——扫描会导入所有找到的文件。' }}
+      </span>
     </div>
 
     <div v-if="!mode || custom" class="add-row">
       <input
-        v-model="draft" placeholder="加一个关键词,回车确认" @keydown="onKey"
+        v-model="draft" :placeholder="isFolder ? '加一个文件夹名,回车确认' : '加一个关键词,回车确认'" @keydown="onKey"
       />
       <button class="btn sm" :disabled="!draft.trim()" @click="add">
         <AppIcon name="plus" :size="14" /> 添加
@@ -82,7 +88,12 @@ function setMode(next) {
     </div>
     <div v-else class="tiny muted">这个库使用全局列表;要单独调整就切到「自定义」。</div>
     <div class="tiny muted">
-      按文件名匹配,英文按整词(如 pv 命中 [PV1],不会命中 Spy);中文按包含。
+      <template v-if="isFolder">
+        按文件夹名匹配,任意一层目录命中就跳过它下面的所有文件;英文按整词,中文按包含。库的根目录本身不算。
+      </template>
+      <template v-else>
+        按文件名匹配,英文按整词(如 pv 命中 [PV1],不会命中 Spy);中文按包含。
+      </template>
     </div>
   </div>
 </template>
