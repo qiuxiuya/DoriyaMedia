@@ -7,6 +7,9 @@ import AccountDialog from './AccountDialog.vue'
 import SiteText from './SiteText.vue'
 import { api } from '../api.js'
 import { logout as signOut } from '../auth.js'
+import { site, ctx, hoverKey, toolbarOn } from '../site/store.js'
+import { fill } from '../site/schema.js'
+import { resolveHeaderItems } from '../site/header.js'
 
 const props = defineProps({
   me: { type: Object, default: null },
@@ -18,46 +21,30 @@ const router = useRouter()
 const libraries = ref([])
 const scrolled = ref(false)
 const menuOpen = ref(false)
-const browseOpen = ref(false)
+const browseOpen = ref('')
 const searching = ref(false)
 const acctOpen = ref(false)
 
 const isAdmin = computed(() => props.me?.role === 'admin')
-const movieLib = computed(() => libraries.value.find((l) => l.type === 'movie'))
-const seriesLib = computed(() => libraries.value.find((l) => l.type === 'series'))
 const solid = computed(() => !props.overlay || scrolled.value || menuOpen.value || browseOpen.value)
 
-// Labels are site copy (文案 › 顶栏), so the owner can rename a tab without a
-// rebuild. `key` names the field; the routes and icons stay here, where the
-// logic that decides which entries exist lives.
-const nav = computed(() => {
-  const out = [{ key: 'home', to: '/', icon: 'home' }]
-  if (movieLib.value) out.push({ key: 'movies', to: `/library/${movieLib.value.id}?type=movie`, icon: 'film' })
-  if (seriesLib.value) out.push({ key: 'shows', to: `/library/${seriesLib.value.id}?type=show`, icon: 'tv' })
-  out.push({ key: 'bangumi', to: '/bangumi', icon: 'bookmark' })
-  out.push({ key: 'browse', to: '/browse', icon: 'folder' })
-  return out
-})
-
-const tabs = computed(() => {
-  const out = [{ key: 'home', to: '/', icon: 'home', exact: true }]
-  if (movieLib.value) out.push({ key: 'movies', to: `/library/${movieLib.value.id}?type=movie`, icon: 'film' })
-  if (seriesLib.value) out.push({ key: 'shows', to: `/library/${seriesLib.value.id}?type=show`, icon: 'tv' })
-  out.push({ key: 'browse', to: '/browse', icon: 'folder' })
-  // The settings backend is the admin's; a viewer gets no tab that would only
-  // bounce them back to the home page.
-  if (isAdmin.value) out.push({ key: 'settings', to: '/settings', icon: 'settings' })
-  return out
-})
+// The editor changes documents, not permissions: resolve using the actual session.
+const menuItems = (section) => resolveHeaderItems(site.doc.header, section, isAdmin.value, libraries.value)
+  .map((item) => ({ ...item, label: fill(item.label, ctx) }))
+const nav = computed(() => menuItems('desktop'))
+const tabs = computed(() => menuItems('mobile'))
+const accountItems = computed(() => menuItems('account'))
+const highlight = (item) => site.canEdit && toolbarOn.value && hoverKey.value === item.copyKey
+const showManageLibraries = computed(() => isAdmin.value && site.doc.header.roles.admin.showManageLibraries !== false)
 
 function onScroll() { scrolled.value = window.scrollY > 24 }
 
 function onDocClick(e) {
-  if (!e.target.closest?.('.menu-wrap')) { menuOpen.value = false; browseOpen.value = false }
+  if (!e.target.closest?.('.menu-wrap')) { menuOpen.value = false; browseOpen.value = '' }
 }
 function onKey(e) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searching.value = true }
-  if (e.key === 'Escape') { menuOpen.value = false; browseOpen.value = false }
+  if (e.key === 'Escape') { menuOpen.value = false; browseOpen.value = '' }
 }
 
 onMounted(async () => {
@@ -73,14 +60,16 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
 })
 
-watch(() => route.fullPath, () => { menuOpen.value = false; browseOpen.value = false })
+watch(() => route.fullPath, () => { menuOpen.value = false; browseOpen.value = '' })
 
-async function logout() {
-  await signOut()
+async function onAccountAction(action) {
+  menuOpen.value = false
+  if (action === 'account') acctOpen.value = true
+  else if (action === 'logout') await signOut()
 }
 
 function pickLibrary(lib) {
-  browseOpen.value = false
+  browseOpen.value = ''
   router.push(`/library/${lib.id}${lib.type === 'series' ? '?type=show' : '?type=movie'}`)
 }
 
@@ -98,31 +87,31 @@ defineExpose({ openSearch: () => { searching.value = true } })
       </router-link>
 
       <nav class="nav desktop-only">
-        <router-link
-          v-for="n in nav" :key="n.to" :to="n.to"
-          class="nav-link" exact-active-class="nav-active"
-        ><SiteText :k="`header.nav.${n.key}`" passive /></router-link>
-
-        <div class="menu-wrap">
-          <button class="nav-link browse" :class="{ on: browseOpen }" @click="browseOpen = !browseOpen">
-            <SiteText k="header.nav.libraries" passive />
-            <AppIcon name="chevronDown" :size="14" :class="{ flip: browseOpen }" />
-          </button>
-          <Transition name="fade">
-            <div v-if="browseOpen" class="dropdown">
-              <div class="dd-title"><SiteText k="header.nav.allLibraries" as="span" passive /></div>
-              <button v-for="l in libraries" :key="l.id" class="dd-item" @click="pickLibrary(l)">
-                <AppIcon :name="l.type === 'series' ? 'tv' : 'film'" :size="16" />
-                <span class="dd-name">{{ l.name }}</span>
-                <span class="tiny">{{ l.type === 'series' ? '剧集' : '电影' }}</span>
-              </button>
-              <div v-if="!libraries.length" class="dd-empty tiny">还没有媒体库,先到设置里创建</div>
-              <router-link v-if="isAdmin" to="/settings" class="dd-item accent" @click="browseOpen = false">
-                <AppIcon name="plus" :size="16" /><span class="dd-name"><SiteText k="header.nav.manageLibraries" passive /></span>
-              </router-link>
-            </div>
-          </Transition>
-        </div>
+        <template v-for="n in nav" :key="n.key">
+          <router-link v-if="!n.action" :to="n.to" class="nav-link" exact-active-class="nav-active">
+            <span :data-site-key="n.copyKey" :class="{ 'copy-hot': highlight(n) }">{{ n.label }}</span>
+          </router-link>
+          <div v-else-if="n.action === 'libraries'" class="menu-wrap">
+            <button class="nav-link browse" :class="{ on: browseOpen === n.key }" :aria-expanded="browseOpen === n.key" @click="browseOpen = browseOpen === n.key ? '' : n.key">
+              <span :data-site-key="n.copyKey" :class="{ 'copy-hot': highlight(n) }">{{ n.label }}</span>
+              <AppIcon name="chevronDown" :size="14" :class="{ flip: browseOpen === n.key }" />
+            </button>
+            <Transition name="fade">
+              <div v-if="browseOpen === n.key" class="dropdown">
+                <div class="dd-title"><SiteText k="header.nav.allLibraries" as="span" passive /></div>
+                <button v-for="l in libraries" :key="l.id" class="dd-item" @click="pickLibrary(l)">
+                  <AppIcon :name="l.type === 'series' ? 'tv' : 'film'" :size="16" />
+                  <span class="dd-name">{{ l.name }}</span>
+                  <span class="tiny">{{ l.type === 'series' ? '剧集' : '电影' }}</span>
+                </button>
+                <div v-if="!libraries.length" class="dd-empty tiny">还没有媒体库</div>
+                <router-link v-if="showManageLibraries" to="/settings" class="dd-item accent" @click="browseOpen = ''">
+                  <AppIcon name="plus" :size="16" /><span class="dd-name"><SiteText k="header.nav.manageLibraries" passive /></span>
+                </router-link>
+              </div>
+            </Transition>
+          </div>
+        </template>
       </nav>
 
       <div class="spacer"></div>
@@ -145,18 +134,14 @@ defineExpose({ openSearch: () => { searching.value = true } })
                 <div class="tiny">{{ isAdmin ? '管理员' : '用户' }}</div>
               </div>
             </div>
-            <button class="dd-item" @click="menuOpen = false; acctOpen = true">
-              <AppIcon name="user" :size="16" /><span class="dd-name">账号设置</span>
-            </button>
-            <router-link to="/bangumi" class="dd-item">
-              <AppIcon name="bookmark" :size="16" /><span class="dd-name">Bangumi 追番</span>
-            </router-link>
-            <router-link v-if="isAdmin" to="/settings" class="dd-item">
-              <AppIcon name="settings" :size="16" /><span class="dd-name">设置</span>
-            </router-link>
-            <button class="dd-item" @click="logout">
-              <AppIcon name="logout" :size="16" /><span class="dd-name">退出登录</span>
-            </button>
+            <template v-for="item in accountItems" :key="item.key">
+              <button v-if="item.action" class="dd-item" @click="onAccountAction(item.action)">
+                <AppIcon :name="item.icon" :size="16" /><span class="dd-name" :data-site-key="item.copyKey" :class="{ 'copy-hot': highlight(item) }">{{ item.label }}</span>
+              </button>
+              <router-link v-else :to="item.to" class="dd-item" @click="menuOpen = false">
+                <AppIcon :name="item.icon" :size="16" /><span class="dd-name" :data-site-key="item.copyKey" :class="{ 'copy-hot': highlight(item) }">{{ item.label }}</span>
+              </router-link>
+            </template>
           </div>
         </Transition>
       </div>
@@ -166,13 +151,13 @@ defineExpose({ openSearch: () => { searching.value = true } })
   <SearchOverlay v-model:open="searching" :libraries="libraries" />
   <AccountDialog v-model:open="acctOpen" />
 
-  <nav class="tabbar">
+  <nav v-if="tabs.length" class="tabbar">
     <router-link
-      v-for="t in tabs" :key="t.to" :to="t.to" class="tab"
+      v-for="t in tabs" :key="t.key" :to="t.to" class="tab"
       :class="{ exact: t.exact }"
     >
       <AppIcon :name="t.icon" :size="21" />
-      <span><SiteText :k="`header.nav.${t.key}`" passive /></span>
+      <span :data-site-key="t.copyKey" :class="{ 'copy-hot': highlight(t) }">{{ t.label }}</span>
     </router-link>
   </nav>
 </template>
@@ -222,6 +207,7 @@ defineExpose({ openSearch: () => { searching.value = true } })
 }
 .wordmark .wm-suffix { color: var(--text-3); font-weight: 600; }
 
+.copy-hot { outline: 1px solid var(--brand); outline-offset: 3px; border-radius: 3px; background: var(--brand-tint); }
 .nav { display: flex; align-items: center; gap: 2px; }
 .nav-link {
   position: relative;

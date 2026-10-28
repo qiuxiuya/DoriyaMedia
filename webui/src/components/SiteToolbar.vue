@@ -18,6 +18,7 @@ import {
 import CopyPanel from './site/CopyPanel.vue'
 import LayoutPanel from './site/LayoutPanel.vue'
 import FooterPanel from './site/FooterPanel.vue'
+import HeaderPanel from './site/HeaderPanel.vue'
 
 const route = useRoute()
 
@@ -28,6 +29,7 @@ const gated = computed(() => toolbarOn.value && !site.canEdit && site.loaded && 
 const TABS = [
   { id: 'copy', label: '文案', icon: 'type' },
   { id: 'layout', label: '布局', icon: 'layout' },
+  { id: 'header', label: '顶栏', icon: 'home' },
   { id: 'footer', label: '页脚', icon: 'list' },
 ]
 
@@ -66,7 +68,7 @@ function discard() {
 }
 
 async function resetAll() {
-  if (!confirm('恢复到内置文案?\n\n已发布的文案、布局与页脚设置都会被清空,且不可撤销。')) return
+  if (!confirm('恢复到内置文案?\n\n已发布的文案、布局、顶栏与页脚设置都会被清空,且不可撤销。')) return
   const r = await resetSite()
   if (r.ok) toast.ok('已恢复成内置文案')
   else toast.err(`恢复失败:${r.error || '未知错误'}`, 4200)
@@ -165,6 +167,7 @@ watch(panelTab, async (tab) => {
           <div class="st-body">
             <CopyPanel v-if="panelTab === 'copy'" />
             <LayoutPanel v-else-if="panelTab === 'layout'" />
+            <HeaderPanel v-else-if="panelTab === 'header'" />
             <FooterPanel v-else-if="panelTab === 'footer'" />
           </div>
 
@@ -202,6 +205,9 @@ watch(panelTab, async (tab) => {
       </button>
       <button class="st-btn" :class="{ on: panelTab === 'layout' }" title="布局" @click="toggleTab('layout')">
         <AppIcon name="layout" :size="14" /> 布局
+      </button>
+      <button class="st-btn" :class="{ on: panelTab === 'header' }" title="顶栏" @click="toggleTab('header')">
+        <AppIcon name="home" :size="14" /> 顶栏
       </button>
       <button class="st-btn" :class="{ on: panelTab === 'footer' }" title="页脚" @click="toggleTab('footer')">
         <AppIcon name="list" :size="14" /> 页脚
@@ -244,4 +250,14 @@ watch(panelTab, async (tab) => {
 .st-dock-enter-active { transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out); }
 .st-dock-leave-active { transition: opacity 120ms ease-in; }
 .st-dock-enter-from, .st-dock-leave-to { opacity: 0; transform: translateY(14px); }
+</style>
+
+<style scoped>
+.st-head { flex-wrap: wrap; gap: 7px; }
+.st-title { white-space: nowrap; }
+.st-tabs { margin-left: auto; flex-shrink: 0; }
+@media (max-width: 420px) {
+  .st-tabs { width: 100%; }
+  .st-tab { flex: 1; justify-content: center; padding: 0 6px; white-space: nowrap; }
+}
 </style>
