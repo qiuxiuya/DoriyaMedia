@@ -5,6 +5,7 @@ import { api, fmtDate, fmtRelative } from '../api.js'
 import { me } from '../auth.js'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
+import ExcludeKeywords from '../components/ExcludeKeywords.vue'
 import LiveProgress from '../components/LiveProgress.vue'
 import { toast } from '../toast.js'
 import { site, setToolbar, panelTab, publishedLabel, dirty } from '../site/store.js'
@@ -117,7 +118,22 @@ const libForm = ref({
   // and a 番剧 library is often a cloud source plus a folder on this machine.
   sources: [{ source_id: '', path: '/' }],
   providers: ['nfo', 'bgm', 'tmdb'],
+  // What this library refuses to import. A new library follows the global list
+  // until someone gives it its own.
+  excludeMode: 'inherit',
+  excludes: [],
 })
+
+// A library's exclusion list is stored as json text; a hand-written row may be
+// plain text instead, and either way the form needs a list.
+function parseKeywords(raw) {
+  if (!raw) return []
+  try {
+    const list = JSON.parse(raw)
+    if (Array.isArray(list)) return list.filter((w) => String(w).trim())
+  } catch {}
+  return String(raw).split(/[\n,，]/).map((w) => w.trim()).filter(Boolean)
+}
 
 function addLibSource() {
   const first = libForm.value.sources[0]
@@ -179,7 +195,63 @@ function startEdit(lib) {
   const places = (lib.sources && lib.sources.length)
     ? lib.sources.map((s) => ({ source_id: s.source_id, path: s.path }))
     : [{ source_id: lib.source_id, path: lib.path }]
-  editForm.value = { name: lib.name, type: lib.type, sources: places, providers: provs }
+  editForm.value = {
+    name: lib.name, type: lib.type, sources: places, providers: provs,
+    excludeMode: lib.exclude_mode === 'custom' ? 'custom' : 'inherit',
+    excludes: parseKeywords(lib.excludes),
+    poster_mode: lib.poster_mode === 'static' ? 'static' : 'auto',
+  }
+  posterMissing.value = false
+  posterVersion.value++
+}
+
+// ---------- library cover ----------
+// The cover is either dynamic (follows the newest item with cached artwork) or a
+// fixed image. Picking or auto-fetching a file applies immediately — the two
+// buttons sit outside the 保存 flow on purpose, so the stored file and the
+// 动态/静态 choice cannot drift apart.
+const posterVersion = ref(0)
+const posterBusy = ref(false)
+const posterMissing = ref(false)
+
+function posterSrc(id) { return `/api/libraries/${id}/poster?v=${posterVersion.value}` }
+
+async function applyLibraryPoster(id, call, okText) {
+  posterBusy.value = true
+  try {
+    await call()
+    editForm.value.poster_mode = 'static'
+    posterMissing.value = false
+    posterVersion.value++
+    await loadAll()
+    toast.ok(okText)
+  } catch (e) { toast.err(e.message) } finally { posterBusy.value = false }
+}
+
+function pickLibraryPoster(id, event) {
+  const file = event.target.files && event.target.files[0]
+  event.target.value = ''
+  if (!file) return
+  applyLibraryPoster(id, () => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.upload(`/api/libraries/${id}/poster`, fd)
+  }, '封面已保存')
+}
+
+function autoLibraryPoster(id) {
+  applyLibraryPoster(id, () => api.post(`/api/libraries/${id}/poster/auto`), '已取该库最新入库条目的海报')
+}
+
+async function clearLibraryPoster(id) {
+  posterBusy.value = true
+  try {
+    await api.del(`/api/libraries/${id}/poster`)
+    posterVersion.value++
+    posterMissing.value = false
+    await loadAll()
+    toast.ok('已恢复动态封面')
+  } catch (e) { toast.err(e.message) } finally { posterBusy.value = false }
 }
 function toggleProvider(p) {
   const a = editForm.value.providers
@@ -204,7 +276,10 @@ async function saveEdit(id) {
       name: f.name, type: f.type,
       source_id: picked[0].source_id, path: picked[0].path,
       sources: picked,
+      poster_mode: f.poster_mode === 'static' ? 'static' : 'auto',
       providers: JSON.stringify(f.providers.length ? f.providers : ['nfo', 'bgm', 'tmdb']),
+      exclude_mode: f.excludeMode === 'custom' ? 'custom' : 'inherit',
+      excludes: JSON.stringify(f.excludes || []),
     })
     editing.value = null
     await loadAll()
@@ -480,11 +555,15 @@ async function addLibrary() {
       source_id: picked[0].source_id, path: picked[0].path,
       sources: picked,
       providers: JSON.stringify(f.providers.length ? f.providers : ['nfo', 'bgm', 'tmdb']),
+      exclude_mode: f.excludeMode === 'custom' ? 'custom' : 'inherit',
+      excludes: JSON.stringify(f.excludes || []),
     })
     libForm.value = {
       name: '', type: 'movie',
       sources: [{ source_id: f.sources[0]?.source_id || '', path: '/' }],
       providers: ['nfo', 'bgm', 'tmdb'],
+      excludeMode: 'inherit',
+      excludes: [],
     }
     addingLibrary.value = false
     await loadAll()
@@ -568,6 +647,9 @@ async function saveConfig() {
       ffmpeg: cfg.value.ffmpeg,
       ffprobe: cfg.value.ffprobe,
       scan_concurrency: Number(cfg.value.scan_concurrency),
+      // Sent even when empty: an empty list is how the user turns an exclusion
+      // off, and the server writes exactly what it is given.
+      exclude_keywords: (cfg.value.exclude_keywords || []).map((w) => String(w).trim()).filter(Boolean),
       tmdb: cfg.value.tmdb,
       bgm: cfg.value.bgm,
       playback: cfg.value.playback,
@@ -1043,6 +1125,14 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                       >{{ providerLabels[p] }}</button>
                     </div>
                   </div>
+                  <div class="field">
+                    <label>扫描排除</label>
+                    <ExcludeKeywords
+                      v-model="libForm.excludes"
+                      v-model:mode="libForm.excludeMode"
+                      :inherited="cfg?.exclude_keywords || []"
+                    />
+                  </div>
                   <button class="btn primary" :disabled="!libForm.sources.some(s => s.source_id) || !libForm.name" @click="addLibrary">
                     <AppIcon name="check" :size="15" /> 创建媒体库
                   </button>
@@ -1089,6 +1179,58 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                     <button v-for="p in ['nfo', 'tmdb', 'bgm']" :key="p" class="chip" :class="{ on: editForm.providers.includes(p) }" @click="toggleProvider(p)">
                       {{ providerLabels[p] }}
                     </button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>扫描排除</label>
+                  <ExcludeKeywords
+                    v-model="editForm.excludes"
+                    v-model:mode="editForm.excludeMode"
+                    :inherited="cfg?.exclude_keywords || []"
+                  />
+                </div>
+                <div class="field">
+                  <label>封面(Emby 里的媒体库图标)</label>
+                  <div class="type-picker">
+                    <button
+                      class="chip" :class="{ on: editForm.poster_mode !== 'static' }"
+                      @click="editForm.poster_mode = 'auto'"
+                    >动态(跟随最新入库)</button>
+                    <button
+                      class="chip" :class="{ on: editForm.poster_mode === 'static' }"
+                      @click="editForm.poster_mode = 'static'"
+                    >静态(固定一张)</button>
+                  </div>
+                  <div v-if="editForm.poster_mode === 'static'" class="lib-poster">
+                    <img
+                      v-if="!posterMissing"
+                      :src="posterSrc(lib.id)" class="lib-poster-thumb" alt="封面预览"
+                      @error="posterMissing = true"
+                    />
+                    <div v-else class="lib-poster-thumb lib-poster-empty tiny dim">还没有封面</div>
+                    <div class="lib-poster-actions">
+                      <div class="btn-row">
+                        <label class="btn sm" :class="{ disabled: posterBusy }">
+                          <AppIcon name="image" :size="14" /> 选取图片
+                          <input
+                            type="file" hidden accept="image/png,image/jpeg,image/webp"
+                            :disabled="posterBusy" @change="pickLibraryPoster(lib.id, $event)"
+                          />
+                        </label>
+                        <button class="btn sm" :disabled="posterBusy" @click="autoLibraryPoster(lib.id)">
+                          <AppIcon name="download" :size="14" /> 自动获取
+                        </button>
+                        <button class="btn sm danger" :disabled="posterBusy" @click="clearLibraryPoster(lib.id)">
+                          <AppIcon name="trash" :size="14" /> 恢复动态
+                        </button>
+                      </div>
+                      <div class="tiny dim">
+                        这两个按钮改完立即生效,不用点保存。自动获取取该媒体库最近入库、且已缓存海报的条目。
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="tiny dim">
+                    动态封面由该库最近入库、且已缓存海报的条目决定,新片入库后会跟着变;切到静态可以自己选一张。
                   </div>
                 </div>
                 <div class="btn-row">
@@ -1814,6 +1956,14 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <input v-model="cfg.scan_concurrency" type="number" min="1" max="16" />
                 <span class="hint">网盘源建议 2–4,本地磁盘可以更高。</span>
               </div>
+              <div class="field wide">
+                <label>扫描排除(全局默认)</label>
+                <ExcludeKeywords v-model="cfg.exclude_keywords" />
+                <span class="hint">
+                  命中的文件不会被导入媒体库——不当剧集、不当电影、不出卡片,也不会被刮削;文件浏览里仍然能播。
+                  下面的媒体库可以「跟随全局」或单独设一份。
+                </span>
+              </div>
             </div>
             <div class="save-bar flat">
               <span class="tiny">保存后立即生效</span>
@@ -1998,6 +2148,15 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
 .src-row input { flex: 1 1 auto; min-width: 0; }
 .src-row .btn { flex: 0 0 auto; }
 .lib-actions { display: flex; gap: 8px; flex: none; flex-wrap: wrap; }
+/* 封面:预览缩略图 + 选取图片 / 自动获取 / 恢复动态 三个按钮 */
+.lib-poster { display: flex; gap: 12px; align-items: flex-start; margin-top: 10px; }
+.lib-poster-thumb {
+  flex: 0 0 auto; width: 76px; height: 108px; border-radius: var(--r-m);
+  object-fit: cover; background: var(--bg-2); border: 1px solid var(--line-1);
+}
+.lib-poster-empty { display: flex; align-items: center; justify-content: center; text-align: center; padding: 6px; }
+.lib-poster-actions { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.lib-poster-actions .btn-row { flex-wrap: wrap; }
 /* 扫描/体检的进度显示由 LiveProgress 组件自己带样式 */
 .scan-done { margin-top: 10px; display: flex; align-items: center; gap: 6px; color: var(--text-3); }
 .scan-done svg { color: var(--ok); }
