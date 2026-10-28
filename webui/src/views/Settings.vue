@@ -7,6 +7,8 @@ import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ExcludeKeywords from '../components/ExcludeKeywords.vue'
 import LiveProgress from '../components/LiveProgress.vue'
+import PathScanDialog from '../components/PathScanDialog.vue'
+import { buildPathScanRequest } from '../libraryScan.js'
 import { toast } from '../toast.js'
 import { site, setToolbar, panelTab, publishedLabel, dirty } from '../site/store.js'
 
@@ -582,11 +584,41 @@ async function addLibrary() {
   } catch (e) { toast.err(e.message) }
 }
 
-async function scanLibrary(id) {
+const pathScanLibrary = ref(null)
+const scanPending = ref({})
+const pathScanError = ref('')
+
+function openPathScan(lib) {
+  if (scanPending.value[lib.id] || stFor(lib.id)?.running) return
+  pathScanError.value = ''
+  pathScanLibrary.value = lib
+}
+
+async function scanLibrary(id, target) {
+  if (scanPending.value[id] || stFor(id)?.running) return
+  scanPending.value[id] = true
+  pathScanError.value = ''
   try {
-    await api.post(`/api/libraries/${id}/scan`)
-    toast.info('扫描已开始(含刮削,后台进行)')
-  } catch (e) { toast.err(e.message) }
+    // Only the original full-scan button omits a target. Never fall back to a
+    // full scan when the path form is empty, stale or invalid.
+    if (target !== undefined) {
+      const lib = libraries.value.find((entry) => entry.id === id)
+      const body = buildPathScanRequest(lib, target?.place, target?.path)
+      await api.post(`/api/libraries/${id}/scan`, body)
+      pathScanLibrary.value = null
+    } else {
+      await api.post(`/api/libraries/${id}/scan`)
+    }
+    toast.info(target !== undefined ? '指定目录扫描已开始(含子目录及刮削,后台进行)' : '扫描已开始(含刮削,后台进行)')
+    // Reuse the existing LiveProgress/status poll, without turning a refresh
+    // failure into a misleading scan-submission error.
+    try { scanStates.value = (await api.get('/api/scan/status')) || [] } catch {}
+  } catch (e) {
+    if (target !== undefined) pathScanError.value = e.message
+    toast.err(e.message)
+  } finally {
+    scanPending.value[id] = false
+  }
 }
 
 // ---------- 字幕体检 ----------
@@ -1286,8 +1318,11 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                     <button v-if="stFor(lib.id)?.running" class="btn sm" @click="stopScan(lib.id)">
                       <AppIcon name="close" :size="14" /> 停止
                     </button>
-                    <button v-else class="btn sm primary" @click="scanLibrary(lib.id)">
-                      <AppIcon name="scan" :size="14" /> 扫描
+                    <button v-else class="btn sm primary" :disabled="scanPending[lib.id]" @click="scanLibrary(lib.id)">
+                      <AppIcon name="scan" :size="14" /> {{ scanPending[lib.id] ? '正在提交…' : '全量扫描' }}
+                    </button>
+                    <button class="btn sm" :disabled="scanPending[lib.id] || stFor(lib.id)?.running" @click="openPathScan(lib)">
+                      <AppIcon name="folder" :size="14" /> 按路径扫描
                     </button>
                     <button
                       v-if="auditFor(lib.id)?.state.running"
@@ -2012,6 +2047,17 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
         </section>
       </div>
     </div>
+
+    <PathScanDialog
+      v-if="pathScanLibrary"
+      :library="pathScanLibrary"
+      :sources="sources"
+      :busy="!!scanPending[pathScanLibrary.id]"
+      :running="!!stFor(pathScanLibrary.id)?.running"
+      :error="pathScanError"
+      @close="pathScanLibrary = null"
+      @submit="scanLibrary(pathScanLibrary.id, $event)"
+    />
 
     <!-- 重置密码：独立弹窗,避免在用户卡片里塞一个容易误触的输入框 -->
     <Transition name="modal">
