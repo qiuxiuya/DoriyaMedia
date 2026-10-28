@@ -27,23 +27,6 @@ function cold() {
     <PanelField k="site.title" label="浏览器标题 / 站点名" hint="标签页标题,也会显示在页脚版权占位符里" />
   </PanelGroup>
 
-  <PanelGroup title="顶栏" icon="layout">
-    <p class="st-note">页面最上方那一条:左边品牌字样,右边导航。导航里的「首页 / 电影 / 剧集 / 文件」手机底部标签栏也用同一份文字。</p>
-    <div class="st-pair">
-      <PanelField k="header.brand.name" label="品牌 · 名称" />
-      <PanelField k="header.brand.suffix" label="品牌 · 后缀(灰色部分)" />
-    </div>
-    <PanelField k="header.nav.home" label="导航 · 首页" />
-    <PanelField k="header.nav.movies" label="导航 · 电影" hint="有电影库时才出现" />
-    <PanelField k="header.nav.shows" label="导航 · 剧集" hint="有剧集库时才出现" />
-    <PanelField k="header.nav.bangumi" label="导航 · 追番" />
-    <PanelField k="header.nav.browse" label="导航 · 文件" />
-    <PanelField k="header.nav.libraries" label="导航 · 媒体库" hint="展开全部媒体库的那个按钮" />
-    <PanelField k="header.nav.allLibraries" label="媒体库下拉 · 标题" />
-    <PanelField k="header.nav.manageLibraries" label="媒体库下拉 · 管理入口" />
-    <PanelField k="header.nav.settings" label="导航 · 设置" hint="管理员手机上底部标签栏的那一项" />
-  </PanelGroup>
-
   <PanelGroup title="登录页品牌" icon="wand">
     <div class="st-pair">
       <PanelField k="login.brand.name" label="名称" />
