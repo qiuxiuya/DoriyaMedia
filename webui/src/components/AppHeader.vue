@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
 import SearchOverlay from './SearchOverlay.vue'
 import AccountDialog from './AccountDialog.vue'
+import SiteText from './SiteText.vue'
 import { api } from '../api.js'
 import { logout as signOut } from '../auth.js'
 
@@ -26,23 +27,26 @@ const movieLib = computed(() => libraries.value.find((l) => l.type === 'movie'))
 const seriesLib = computed(() => libraries.value.find((l) => l.type === 'series'))
 const solid = computed(() => !props.overlay || scrolled.value || menuOpen.value || browseOpen.value)
 
+// Labels are site copy (文案 › 顶栏), so the owner can rename a tab without a
+// rebuild. `key` names the field; the routes and icons stay here, where the
+// logic that decides which entries exist lives.
 const nav = computed(() => {
-  const out = [{ label: '首页', to: '/', icon: 'home' }]
-  if (movieLib.value) out.push({ label: '电影', to: `/library/${movieLib.value.id}?type=movie`, icon: 'film' })
-  if (seriesLib.value) out.push({ label: '剧集', to: `/library/${seriesLib.value.id}?type=show`, icon: 'tv' })
-  out.push({ label: '追番', to: '/bangumi', icon: 'bookmark' })
-  out.push({ label: '文件', to: '/browse', icon: 'folder' })
+  const out = [{ key: 'home', to: '/', icon: 'home' }]
+  if (movieLib.value) out.push({ key: 'movies', to: `/library/${movieLib.value.id}?type=movie`, icon: 'film' })
+  if (seriesLib.value) out.push({ key: 'shows', to: `/library/${seriesLib.value.id}?type=show`, icon: 'tv' })
+  out.push({ key: 'bangumi', to: '/bangumi', icon: 'bookmark' })
+  out.push({ key: 'browse', to: '/browse', icon: 'folder' })
   return out
 })
 
 const tabs = computed(() => {
-  const out = [{ label: '首页', to: '/', icon: 'home', exact: true }]
-  if (movieLib.value) out.push({ label: '电影', to: `/library/${movieLib.value.id}?type=movie`, icon: 'film' })
-  if (seriesLib.value) out.push({ label: '剧集', to: `/library/${seriesLib.value.id}?type=show`, icon: 'tv' })
-  out.push({ label: '文件', to: '/browse', icon: 'folder' })
+  const out = [{ key: 'home', to: '/', icon: 'home', exact: true }]
+  if (movieLib.value) out.push({ key: 'movies', to: `/library/${movieLib.value.id}?type=movie`, icon: 'film' })
+  if (seriesLib.value) out.push({ key: 'shows', to: `/library/${seriesLib.value.id}?type=show`, icon: 'tv' })
+  out.push({ key: 'browse', to: '/browse', icon: 'folder' })
   // The settings backend is the admin's; a viewer gets no tab that would only
   // bounce them back to the home page.
-  if (isAdmin.value) out.push({ label: '设置', to: '/settings', icon: 'settings' })
+  if (isAdmin.value) out.push({ key: 'settings', to: '/settings', icon: 'settings' })
   return out
 })
 
@@ -86,25 +90,27 @@ defineExpose({ openSearch: () => { searching.value = true } })
 <template>
   <header class="topbar" :class="{ solid, overlay }">
     <div class="inner">
-      <router-link to="/" class="brand" aria-label="DoriyaMedia 首页">
+      <router-link to="/" class="brand" aria-label="首页">
         <span class="logo"><AppIcon name="play" :size="13" filled /></span>
-        <span class="wordmark">Doriya<span>Media</span></span>
+        <span class="wordmark">
+          <SiteText k="header.brand.name" passive /><SiteText k="header.brand.suffix" class="wm-suffix" passive />
+        </span>
       </router-link>
 
       <nav class="nav desktop-only">
         <router-link
           v-for="n in nav" :key="n.to" :to="n.to"
           class="nav-link" exact-active-class="nav-active"
-        >{{ n.label }}</router-link>
+        ><SiteText :k="`header.nav.${n.key}`" passive /></router-link>
 
         <div class="menu-wrap">
           <button class="nav-link browse" :class="{ on: browseOpen }" @click="browseOpen = !browseOpen">
-            媒体库
+            <SiteText k="header.nav.libraries" passive />
             <AppIcon name="chevronDown" :size="14" :class="{ flip: browseOpen }" />
           </button>
           <Transition name="fade">
             <div v-if="browseOpen" class="dropdown">
-              <div class="dd-title">全部媒体库</div>
+              <div class="dd-title"><SiteText k="header.nav.allLibraries" as="span" passive /></div>
               <button v-for="l in libraries" :key="l.id" class="dd-item" @click="pickLibrary(l)">
                 <AppIcon :name="l.type === 'series' ? 'tv' : 'film'" :size="16" />
                 <span class="dd-name">{{ l.name }}</span>
@@ -112,7 +118,7 @@ defineExpose({ openSearch: () => { searching.value = true } })
               </button>
               <div v-if="!libraries.length" class="dd-empty tiny">还没有媒体库,先到设置里创建</div>
               <router-link v-if="isAdmin" to="/settings" class="dd-item accent" @click="browseOpen = false">
-                <AppIcon name="plus" :size="16" /><span class="dd-name">管理媒体库</span>
+                <AppIcon name="plus" :size="16" /><span class="dd-name"><SiteText k="header.nav.manageLibraries" passive /></span>
               </router-link>
             </div>
           </Transition>
@@ -166,7 +172,7 @@ defineExpose({ openSearch: () => { searching.value = true } })
       :class="{ exact: t.exact }"
     >
       <AppIcon :name="t.icon" :size="21" />
-      <span>{{ t.label }}</span>
+      <span><SiteText :k="`header.nav.${t.key}`" passive /></span>
     </router-link>
   </nav>
 </template>
@@ -214,7 +220,7 @@ defineExpose({ openSearch: () => { searching.value = true } })
   font-weight: 800;
   letter-spacing: -0.035em;
 }
-.wordmark span { color: var(--text-3); font-weight: 600; }
+.wordmark .wm-suffix { color: var(--text-3); font-weight: 600; }
 
 .nav { display: flex; align-items: center; gap: 2px; }
 .nav-link {
@@ -340,6 +346,6 @@ defineExpose({ openSearch: () => { searching.value = true } })
   .brand { margin-right: 0; }
 }
 @media (max-width: 520px) {
-  .wordmark span { display: none; }
+  .wordmark .wm-suffix { display: none; }
 }
 </style>
