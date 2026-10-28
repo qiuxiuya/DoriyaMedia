@@ -215,6 +215,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request, user *m
 		"users":            s.Cfg.Users,
 		"smtp":             s.Cfg.SMTP,
 		"turnstile":        s.Cfg.Turnstile,
+		"emby":             s.Cfg.Emby,
 	}
 	writeJSON(w, 200, cfg)
 }
@@ -234,10 +235,21 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 		Users           *configUsers     `json:"users"`
 		SMTP            *configSMTP      `json:"smtp"`
 		Turnstile       *configTurnstile `json:"turnstile"`
+		Emby            *struct {
+			Enabled *bool   `json:"enabled"`
+			Name    *string `json:"name"`
+			Icon    *string `json:"icon"`
+		} `json:"emby"`
 	}
 	if err := readBody(r, &req); err != nil {
 		fail(w, 400, err.Error())
 		return
+	}
+	if req.Emby != nil && req.Emby.Icon != nil {
+		if err := config.ValidateEmbyIcon(strings.TrimSpace(*req.Emby.Icon)); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
 	}
 	// Both lists accept /…/ regular expressions, and a pattern that does not
 	// compile is refused before anything is written: a saved-but-broken keyword
@@ -416,6 +428,18 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 		}
 		if req.Turnstile.Proxy != nil {
 			s.Cfg.Turnstile.Proxy = strings.TrimSpace(*req.Turnstile.Proxy)
+		}
+	}
+	if req.Emby != nil {
+		if req.Emby.Enabled != nil {
+			s.Cfg.Emby.Enabled = *req.Emby.Enabled
+		}
+		if req.Emby.Name != nil {
+			s.Cfg.Emby.Name = *req.Emby.Name
+			s.Cfg.Emby.Name = s.Cfg.Emby.ServerName()
+		}
+		if req.Emby.Icon != nil {
+			s.Cfg.Emby.Icon = strings.TrimSpace(*req.Emby.Icon)
 		}
 	}
 	if err := s.Cfg.Save(s.configFile()); err != nil {

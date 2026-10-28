@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,6 +183,40 @@ type Playback struct {
 	HLSCacheMB int `json:"hls_cache_mb"`
 }
 
+// Emby controls the optional compatibility adapter, independently of the web UI.
+type Emby struct {
+	Enabled bool   `json:"enabled"`
+	Name    string `json:"name"`
+	Icon    string `json:"icon"`
+}
+
+func (e Emby) ServerName() string {
+	if name := strings.TrimSpace(e.Name); name != "" {
+		return name
+	}
+	return "DoriyaMedia"
+}
+
+// ValidateEmbyIcon only accepts client-accessible URLs, never executable schemes.
+func ValidateEmbyIcon(icon string) error {
+	if icon == "" {
+		return nil
+	}
+	if strings.ContainsAny(icon, "\\\r\n\t") {
+		return fmt.Errorf("Emby 图标地址不能包含反斜杠或控制字符")
+	}
+	u, err := url.Parse(icon)
+	if err == nil && u.User == nil {
+		if strings.HasPrefix(icon, "/") && !strings.HasPrefix(icon, "//") && u.Host == "" {
+			return nil
+		}
+		if (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("Emby 图标必须是 HTTP(S) 图片地址或以 / 开头的站内路径")
+}
+
 type Config struct {
 	Port            int       `json:"port"`
 	DataDir         string    `json:"data_dir"`
@@ -193,6 +229,7 @@ type Config struct {
 	Users           Users     `json:"users"`
 	SMTP            SMTP      `json:"smtp"`
 	Turnstile       Turnstile `json:"turnstile"`
+	Emby            Emby      `json:"emby"`
 	ScanConcurrency int       `json:"scan_concurrency"`
 	DevWebDir       string    `json:"dev_web_dir"`
 	// ExcludeKeywords is what a scan refuses to import, matched against each
@@ -281,6 +318,7 @@ func Defaults() *Config {
 			UseProxy: true,
 			Proxy:    DefaultTMDBProxy,
 		},
+		Emby:            Emby{Enabled: true, Name: "DoriyaMedia"},
 		ScanConcurrency: 4,
 		ExcludeKeywords: []string{},
 		ExcludeFolders:  []string{},
@@ -298,6 +336,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.normalize()
+	if err := ValidateEmbyIcon(cfg.Emby.Icon); err != nil {
+		return nil, err
+	}
 	if err := cfg.Save(path); err != nil {
 		return nil, err
 	}
@@ -305,6 +346,8 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) normalize() {
+	c.Emby.Name = c.Emby.ServerName()
+	c.Emby.Icon = strings.TrimSpace(c.Emby.Icon)
 	if c.Port <= 0 {
 		c.Port = 5666
 	}

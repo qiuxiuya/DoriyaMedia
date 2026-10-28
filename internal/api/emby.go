@@ -60,7 +60,7 @@ func (s *Server) embyServerID() string {
 	return hex.EncodeToString(h[:16])
 }
 func (s *Server) embySystemInfo() map[string]any {
-	return map[string]any{"Id": s.embyServerID(), "ServerName": "DoriyaMedia", "Version": "4.8.0.0", "OperatingSystem": "DoriyaMedia", "ProductName": "DoriyaMedia", "StartupWizardCompleted": true, "SupportsLibraryMonitor": false, "SupportsLocalPortConfiguration": false}
+	return map[string]any{"Id": s.embyServerID(), "ServerName": s.Cfg.Emby.ServerName(), "Version": "4.8.0.0", "OperatingSystem": "DoriyaMedia", "ProductName": "DoriyaMedia", "StartupWizardCompleted": true, "SupportsLibraryMonitor": false, "SupportsLocalPortConfiguration": false}
 }
 func (s *Server) embyUser(u *models.User) map[string]any {
 	return map[string]any{"Id": embyID(u.ID), "Name": u.Name, "ServerId": s.embyServerID(), "HasPassword": true, "HasConfiguredPassword": true, "EnableAutoLogin": false, "Configuration": s.embyUserConfiguration(u), "Policy": map[string]any{"IsAdministrator": u.IsAdmin(), "IsDisabled": !u.CanLogin(), "EnableMediaPlayback": true, "EnableLiveTvAccess": false, "EnableLiveTvManagement": false, "EnableAudioPlaybackTranscoding": false, "EnableVideoPlaybackTranscoding": false, "EnableContentDeletion": false, "EnableAllFolders": true}}
@@ -127,7 +127,11 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 	secured("GET /sessions", func(w http.ResponseWriter, r *http.Request, u *models.User) {
 		writeJSON(w, 200, []any{s.embySession(r, u)})
 	})
-	secured("GET /branding/configuration", func(w http.ResponseWriter, r *http.Request, u *models.User) { writeJSON(w, 200, map[string]any{}) })
+	// Branding is public so clients can show a server icon before signing in.
+	mux.HandleFunc("GET /branding/configuration", s.embyBranding)
+	for _, path := range []string{"/branding/logo", "/branding/logo.png", "/branding/icon", "/branding/icon.png"} {
+		mux.HandleFunc("GET "+path, s.embyBrandingImage)
+	}
 	secured("POST /users/{user}/configuration", s.embyUserConfigurationSave)
 	secured("POST /users/{user}/configuration/partial", s.embyUserConfigurationSave)
 	secured("GET /displaypreferences/{id}", s.embyDisplayPreferences)
@@ -181,6 +185,10 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.Cfg.Emby.Enabled {
+			http.NotFound(w, r)
 			return
 		}
 		req := r.Clone(r.Context())

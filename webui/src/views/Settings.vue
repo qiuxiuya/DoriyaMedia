@@ -21,7 +21,7 @@ const tabs = [
   { id: 'users', label: '用户', icon: 'users', desc: '账号、角色与注册策略' },
   { id: 'mail', label: '邮件与验证', icon: 'link', desc: 'SMTP、邮箱验证与 Cloudflare 人机验证' },
   { id: 'site', label: '站点外观', icon: 'wand', desc: '登录页文案、布局与页脚' },
-  { id: 'system', label: '系统', icon: 'server', desc: '工具路径与运行状态' },
+  { id: 'system', label: '系统', icon: 'server', desc: 'Emby、工具路径与运行状态' },
 ]
 
 // Open the editing toolbar, optionally somewhere else and on a given panel.
@@ -40,6 +40,20 @@ const scanStates = ref([])
 const sys = ref(null)
 const cfg = ref(null)
 const error = ref('')
+
+const embyIconFailed = ref(false)
+const embyIconPreview = computed(() => {
+  const icon = (cfg.value?.emby?.icon || '').trim()
+  if (icon.includes('\\')) return ''
+  // Do not load unsupported schemes (or protocol-relative URLs) in the preview.
+  if (/^\/(?!\/)/.test(icon)) return icon
+  try {
+    const url = new URL(icon)
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href
+  } catch {}
+  return ''
+})
+watch(() => cfg.value?.emby?.icon, () => { embyIconFailed.value = false })
 
 let pollTimer = null
 
@@ -178,7 +192,8 @@ async function loadAll() {
     libraries.value = (await api.get('/api/libraries')) || []
     scanStates.value = (await api.get('/api/scan/status')) || []
     sys.value = await api.get('/api/system/info')
-    cfg.value = await api.get('/api/config')
+    const config = await api.get('/api/config')
+    cfg.value = { ...config, emby: { enabled: true, name: 'DoriyaMedia', icon: '', ...config.emby } }
     users.value = (await api.get('/api/admin/users')).users || []
     if (!libForm.value.sources[0].source_id && sources.value.length) {
       libForm.value.sources[0].source_id = sources.value[0].id
@@ -700,6 +715,7 @@ async function saveConfig() {
       users: cfg.value.users,
       smtp: cfg.value.smtp,
       turnstile: cfg.value.turnstile,
+      emby: cfg.value.emby,
     })
     toast.ok('配置已保存,立即生效')
     await loadAll()
@@ -2008,6 +2024,48 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
           </div>
 
           <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title"><AppIcon name="tv" :size="16" /> Emby 设置</div>
+                <div class="tiny">管理 Emby 兼容服务,让支持 Emby 的客户端连接当前媒体库。</div>
+              </div>
+              <label class="switch" :class="{ on: cfg.emby.enabled }">
+                <input type="checkbox" v-model="cfg.emby.enabled" class="sr-only" role="switch" aria-label="启用 Emby 兼容服务" :aria-checked="!!cfg.emby.enabled" />
+              </label>
+            </div>
+
+            <div class="form-grid mt-4">
+              <div class="field">
+                <label for="emby-name">Emby 名称</label>
+                <input id="emby-name" v-model="cfg.emby.name" placeholder="DoriyaMedia" />
+                <span class="hint">客户端显示的服务器名称,留空使用 DoriyaMedia。</span>
+              </div>
+              <div class="field">
+                <label for="emby-icon">Emby 图标</label>
+                <input id="emby-icon" v-model="cfg.emby.icon" placeholder="https://example.com/icon.png" aria-describedby="emby-icon-hint" />
+                <span id="emby-icon-hint" class="hint">填写 HTTP(S) 图片地址或以 / 开头的站内路径,留空使用默认图标。客户端需要能够访问该地址。</span>
+              </div>
+            </div>
+
+            <div class="emby-preview">
+              <div class="emby-preview-icon">
+                <img v-if="embyIconPreview && !embyIconFailed" :src="embyIconPreview" alt="Emby 图标预览" referrerpolicy="no-referrer" @error="embyIconFailed = true" />
+                <AppIcon v-else name="server" :size="26" />
+              </div>
+              <div>
+                <div class="emby-preview-name">{{ cfg.emby.name.trim() || 'DoriyaMedia' }}</div>
+                <div class="tiny">{{ cfg.emby.enabled ? 'Emby 兼容服务已启用' : 'Emby 兼容服务已关闭' }} · 保存后生效</div>
+                <div v-if="cfg.emby.icon.trim() && (!embyIconPreview || embyIconFailed)" class="tiny emby-icon-warning" role="status">图标无法预览,请检查图片地址和访问权限。</div>
+              </div>
+            </div>
+
+            <div class="save-bar flat">
+              <span class="tiny">关闭后停止 Emby 客户端访问,不影响网页端使用。客户端可能缓存名称和图标。</span>
+              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
+            </div>
+          </div>
+
+          <div class="card">
             <div class="card-title"><AppIcon name="settings" :size="16" /> 工具路径与性能</div>
             <div class="form-grid">
               <div class="field">
@@ -2182,6 +2240,11 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
 
 .set-body { min-width: 0; }
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); }
+.emby-preview { display: flex; align-items: center; gap: 12px; margin-top: var(--sp-4); }
+.emby-preview-icon { display: grid; place-items: center; flex: 0 0 56px; width: 56px; height: 56px; border-radius: var(--r-m); background: var(--bg-2); border: 1px solid var(--line-1); color: var(--brand); overflow: hidden; }
+.emby-preview-icon img { width: 100%; height: 100%; object-fit: contain; }
+.emby-preview-name { font-weight: 600; overflow-wrap: anywhere; }
+.emby-icon-warning { color: var(--warn, #e8ae50); }
 .add-panel { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--line-1); }
 
 .type-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
