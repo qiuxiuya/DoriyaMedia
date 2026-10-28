@@ -15,6 +15,24 @@ export const DEFAULTS = {
     accent: 'amber',
   },
 
+  // The bar across the top of every page. Its brand is the wordmark next to the
+  // logo (two halves, styled differently) and the nav labels beside it; the same
+  // labels feed the phone tab bar, so a rename reaches both.
+  header: {
+    brand: { name: 'Doriya', suffix: 'Media' },
+    nav: {
+      home: '首页',
+      movies: '电影',
+      shows: '剧集',
+      bangumi: '追番',
+      browse: '文件',
+      libraries: '媒体库',
+      allLibraries: '全部媒体库',
+      manageLibraries: '管理媒体库',
+      settings: '设置',
+    },
+  },
+
   login: {
     layout: {
       aside: 'left',        // left | right — which half the brand story sits on
