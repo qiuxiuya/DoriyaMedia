@@ -11,6 +11,7 @@ import (
 	"doriyamedia/internal/auth"
 	"doriyamedia/internal/config"
 	"doriyamedia/internal/models"
+	"doriyamedia/internal/scan"
 )
 
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +207,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request, user *m
 		"ffprobe":          s.Cfg.FFProbe,
 		"scan_concurrency": s.Cfg.ScanConcurrency,
 		"exclude_keywords": s.Cfg.ExcludeKeywords,
+		"exclude_folders":  s.Cfg.ExcludeFolders,
 		"dev_web_dir":      s.Cfg.DevWebDir,
 		"tmdb":             s.Cfg.TMDB,
 		"bgm":              s.Cfg.BGM,
@@ -224,6 +226,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 		FFProbe         *string          `json:"ffprobe"`
 		ScanConcurrency *int             `json:"scan_concurrency"`
 		ExcludeKeywords *[]string        `json:"exclude_keywords"`
+		ExcludeFolders  *[]string        `json:"exclude_folders"`
 		DevWebDir       *string          `json:"dev_web_dir"`
 		TMDB            *configTMDB      `json:"tmdb"`
 		BGM             *configBGM       `json:"bgm"`
@@ -235,6 +238,18 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 	if err := readBody(r, &req); err != nil {
 		fail(w, 400, err.Error())
 		return
+	}
+	// Both lists accept /…/ regular expressions, and a pattern that does not
+	// compile is refused before anything is written: a saved-but-broken keyword
+	// would silently exclude nothing, which is worse than a rejected save.
+	for _, list := range []*[]string{req.ExcludeKeywords, req.ExcludeFolders} {
+		if list == nil {
+			continue
+		}
+		if err := scan.ValidateExcludes(cleanKeywords(*list)); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
 	}
 	if req.Port != nil && *req.Port > 0 {
 		s.Cfg.Port = *req.Port
@@ -248,10 +263,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 	if req.ScanConcurrency != nil && *req.ScanConcurrency > 0 {
 		s.Cfg.ScanConcurrency = *req.ScanConcurrency
 	}
-	// A list is saved as sent, including an empty one: the defaults are written into
-	// the config file so that deleting an entry is how a user turns it off.
+	// A list is saved as sent, including an empty one: deleting an entry is how a
+	// user turns it off, and there are no built-in defaults to restore.
 	if req.ExcludeKeywords != nil {
 		s.Cfg.ExcludeKeywords = cleanKeywords(*req.ExcludeKeywords)
+	}
+	if req.ExcludeFolders != nil {
+		s.Cfg.ExcludeFolders = cleanKeywords(*req.ExcludeFolders)
 	}
 	if req.DevWebDir != nil {
 		s.Cfg.DevWebDir = *req.DevWebDir

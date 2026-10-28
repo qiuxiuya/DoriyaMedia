@@ -15,6 +15,7 @@ import (
 
 	"doriyamedia/internal/models"
 	"doriyamedia/internal/netproxy"
+	"doriyamedia/internal/scan"
 	"doriyamedia/internal/source"
 )
 
@@ -378,14 +379,45 @@ func cleanKeywords(list []string) []string {
 	return out
 }
 
+// decodeKeywords reads back the json list an excludesField holds, so the entries
+// written as regular expressions can be checked before the row is written.
+func decodeKeywords(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return nil
+	}
+	return list
+}
+
+// checkExcludes refuses a library whose exclusion lists carry a regular
+// expression that does not compile, naming the entry in the error.
+func checkExcludes(lists ...string) error {
+	for _, raw := range lists {
+		if err := scan.ValidateExcludes(decodeKeywords(raw)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleCreateLibrary(w http.ResponseWriter, r *http.Request, user *models.User) {
 	var req struct {
 		models.Library
-		Providers providersField `json:"providers"`
-		Excludes  excludesField  `json:"excludes"`
+		Providers      providersField `json:"providers"`
+		Excludes       excludesField  `json:"excludes"`
+		FolderExcludes excludesField  `json:"exclude_folders"`
 	}
 	if err := readBody(r, &req); err != nil || req.Name == "" {
 		fail(w, 400, "名称不能为空")
+		return
+	}
+	// A /…/ entry that does not compile is refused here, so no library is created
+	// with a keyword that silently never matches.
+	if err := checkExcludes(string(req.Excludes), string(req.FolderExcludes)); err != nil {
+		fail(w, 400, err.Error())
 		return
 	}
 	lib := req.Library
@@ -399,11 +431,16 @@ func (s *Server) handleCreateLibrary(w http.ResponseWriter, r *http.Request, use
 	if lib.Providers == "" {
 		lib.Providers = `["nfo","bgm","tmdb"]`
 	}
-	// A new library follows the global exclusion list unless it was given one.
+	// A new library follows the global exclusion lists unless it was given one.
 	lib.Excludes = string(req.Excludes)
 	if lib.ExcludeMode != "custom" {
 		lib.ExcludeMode = "inherit"
 		lib.Excludes = ""
+	}
+	lib.ExcludeFolders = string(req.FolderExcludes)
+	if lib.ExcludeFolderMode != "custom" {
+		lib.ExcludeFolderMode = "inherit"
+		lib.ExcludeFolders = ""
 	}
 	// The library's own source_id/path name its first place: the column is NOT
 	// NULL with a foreign key, and everything that predates multi-source reads
@@ -441,10 +478,15 @@ func (s *Server) handleUpdateLibrary(w http.ResponseWriter, r *http.Request, use
 	}
 	var req struct {
 		models.Library
-		Providers providersField `json:"providers"`
-		Excludes  excludesField  `json:"excludes"`
+		Providers      providersField `json:"providers"`
+		Excludes       excludesField  `json:"excludes"`
+		FolderExcludes excludesField  `json:"exclude_folders"`
 	}
 	if err := readBody(r, &req); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	if err := checkExcludes(string(req.Excludes), string(req.FolderExcludes)); err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
@@ -475,6 +517,20 @@ func (s *Server) handleUpdateLibrary(w http.ResponseWriter, r *http.Request, use
 	} else {
 		lib.ExcludeMode = "inherit"
 		lib.Excludes = "[]"
+	}
+	// The folder list follows the same rule, and its own mode: a client that does
+	// not send it cannot wipe a library's folder exclusions.
+	if req.ExcludeFolderMode != "" {
+		lib.ExcludeFolderMode = req.ExcludeFolderMode
+	}
+	if lib.ExcludeFolderMode == "custom" {
+		lib.ExcludeFolders = string(req.FolderExcludes)
+		if strings.TrimSpace(lib.ExcludeFolders) == "" {
+			lib.ExcludeFolders = "[]"
+		}
+	} else {
+		lib.ExcludeFolderMode = "inherit"
+		lib.ExcludeFolders = "[]"
 	}
 	// The cover mode is a library setting; the pinned filename is only ever set
 	// by the poster endpoints, so a request cannot point it at another file.

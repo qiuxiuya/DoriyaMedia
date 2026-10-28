@@ -122,8 +122,13 @@ type Library struct {
 	ExcludeMode string `json:"exclude_mode"`
 	// Excludes is a json array of keywords, only read when ExcludeMode is
 	// "custom". A file whose name contains one is not imported.
-	Excludes  string    `json:"excludes"`
-	CreatedAt time.Time `json:"created_at"`
+	Excludes string `json:"excludes"`
+	// ExcludeFolderMode and ExcludeFolders are the same pair for folders: with
+	// "custom", a folder whose own name contains one of these keywords is skipped
+	// whole, at any depth. An empty mode follows the global list.
+	ExcludeFolderMode string    `json:"exclude_folder_mode"`
+	ExcludeFolders    string    `json:"exclude_folders"`
+	CreatedAt         time.Time `json:"created_at"`
 	// PosterMode is "auto" (cover follows the newest item with cached artwork)
 	// or "static" (the user picked a cover, cached as library_<id>_poster.*).
 	PosterMode string `json:"poster_mode"`

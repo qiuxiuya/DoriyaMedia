@@ -150,6 +150,8 @@ func (s *Store) migrate() error {
 			providers TEXT NOT NULL DEFAULT '["nfo","tmdb"]',
 			exclude_mode TEXT NOT NULL DEFAULT 'inherit',
 			excludes TEXT NOT NULL DEFAULT '[]',
+			exclude_folder_mode TEXT NOT NULL DEFAULT 'inherit',
+			exclude_folders TEXT NOT NULL DEFAULT '[]',
 			created_at TIMESTAMP NOT NULL,
 			poster_mode TEXT NOT NULL DEFAULT 'auto',
 			poster_path TEXT NOT NULL DEFAULT ''
@@ -617,13 +619,18 @@ func (s *Store) migrateItemSourceTypes() error {
 	return nil
 }
 
-// migrateLibraryExcludes adds the per-library exclusion list. Libraries created
-// before it inherit the global list, which is what the empty mode means — no
+// migrateLibraryExcludes adds the per-library exclusion lists. Libraries created
+// before them inherit the global lists, which is what the empty mode means — no
 // backfill needed, and a library the user already tuned keeps its behaviour.
+//
+// There are two lists: keywords matched against file names, and keywords matched
+// against folder names (an Extras or Sample directory, skipped whole).
 func (s *Store) migrateLibraryExcludes() error {
 	columns := []struct{ name, ddl string }{
 		{"exclude_mode", `ALTER TABLE libraries ADD COLUMN exclude_mode TEXT NOT NULL DEFAULT 'inherit'`},
 		{"excludes", `ALTER TABLE libraries ADD COLUMN excludes TEXT NOT NULL DEFAULT '[]'`},
+		{"exclude_folder_mode", `ALTER TABLE libraries ADD COLUMN exclude_folder_mode TEXT NOT NULL DEFAULT 'inherit'`},
+		{"exclude_folders", `ALTER TABLE libraries ADD COLUMN exclude_folders TEXT NOT NULL DEFAULT '[]'`},
 	}
 	for _, c := range columns {
 		if err := s.addColumn("libraries", c.name, c.ddl); err != nil {
@@ -1100,14 +1107,15 @@ func (s *Store) CreateLibrary(lib *models.Library) error {
 	// request from it, and a library handed out saying mode "" would behave as
 	// "inherit" while claiming to have no opinion.
 	lib.ExcludeMode, lib.Excludes = orExcludeMode(lib.ExcludeMode), orExcludes(lib.Excludes)
+	lib.ExcludeFolderMode, lib.ExcludeFolders = orExcludeMode(lib.ExcludeFolderMode), orExcludes(lib.ExcludeFolders)
 	if lib.PosterMode != "static" {
 		lib.PosterMode = "auto"
 	}
 	res, err := s.DB.Exec(`INSERT INTO libraries
-		(name, type, source_id, path, providers, exclude_mode, excludes, created_at, poster_mode, poster_path)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		(name, type, source_id, path, providers, exclude_mode, excludes, exclude_folder_mode, exclude_folders, created_at, poster_mode, poster_path)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.ExcludeMode, lib.Excludes,
-		time.Now(), lib.PosterMode, lib.PosterPath)
+		lib.ExcludeFolderMode, lib.ExcludeFolders, time.Now(), lib.PosterMode, lib.PosterPath)
 	if err != nil {
 		return err
 	}
@@ -1121,13 +1129,14 @@ func (s *Store) CreateLibrary(lib *models.Library) error {
 
 func (s *Store) UpdateLibrary(lib *models.Library) error {
 	lib.ExcludeMode, lib.Excludes = orExcludeMode(lib.ExcludeMode), orExcludes(lib.Excludes)
+	lib.ExcludeFolderMode, lib.ExcludeFolders = orExcludeMode(lib.ExcludeFolderMode), orExcludes(lib.ExcludeFolders)
 	if lib.PosterMode != "static" {
 		lib.PosterMode = "auto"
 	}
 	_, err := s.DB.Exec(`UPDATE libraries SET name=?, type=?, source_id=?, path=?, providers=?,
-		exclude_mode=?, excludes=?, poster_mode=?, poster_path=? WHERE id=?`,
+		exclude_mode=?, excludes=?, exclude_folder_mode=?, exclude_folders=?, poster_mode=?, poster_path=? WHERE id=?`,
 		lib.Name, lib.Type, lib.SourceID, lib.Path, lib.Providers, lib.ExcludeMode, lib.Excludes,
-		lib.PosterMode, lib.PosterPath, lib.ID)
+		lib.ExcludeFolderMode, lib.ExcludeFolders, lib.PosterMode, lib.PosterPath, lib.ID)
 	return err
 }
 
@@ -1260,11 +1269,12 @@ func (s *Store) SetLibraryPoster(libraryID int64, mode, name string) error {
 }
 
 // libraryCols and scanLibrary keep the two shapes in step as columns are added.
-const libraryCols = `id, name, type, source_id, path, providers, exclude_mode, excludes, created_at, poster_mode, poster_path`
+const libraryCols = `id, name, type, source_id, path, providers, exclude_mode, excludes, exclude_folder_mode, exclude_folders, created_at, poster_mode, poster_path`
 
 func scanLibrary(scan func(...any) error, lib *models.Library) error {
 	return scan(&lib.ID, &lib.Name, &lib.Type, &lib.SourceID, &lib.Path, &lib.Providers,
-		&lib.ExcludeMode, &lib.Excludes, &lib.CreatedAt, &lib.PosterMode, &lib.PosterPath)
+		&lib.ExcludeMode, &lib.Excludes, &lib.ExcludeFolderMode, &lib.ExcludeFolders,
+		&lib.CreatedAt, &lib.PosterMode, &lib.PosterPath)
 }
 
 func (s *Store) LibraryByID(id int64) (*models.Library, error) {
