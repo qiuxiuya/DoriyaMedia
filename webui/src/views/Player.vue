@@ -159,6 +159,15 @@ const duration = ref(0)
 const position = ref(0)
 const buffered = ref(0)
 const isLoading = ref(true)
+/* Whether this stream has actually put a picture on screen yet. It is what
+ * separates "刚进来,还在等第一帧" from "已经在看": once frames have moved, the
+ * center spinner must never come back for a mere preparation state — only for a
+ * genuine stop (see `stalled`). */
+const playedOnce = ref(false)
+/* The playhead has really stopped with nothing to play: a network stall, or a
+ * wait for data after a seek. Kept apart from `isLoading` on purpose — a stall
+ * happens mid-playback, where `isLoading` is (rightly) false. */
+const stalled = ref(false)
 const isPlaying = ref(false)
 const muted = ref(localStorage.getItem('dm:muted') === '1')
 const volume = ref(Number(localStorage.getItem('dm:volume') ?? 1))
@@ -741,6 +750,19 @@ const encoderTooSlow = computed(() => {
   return r !== null && r < 0.9 && stallSeconds.value >= 20
 })
 
+/**
+ * Should the center of the picture be covered by the buffering state?
+ *
+ * Only when the viewer really has nothing to look at: while the first frames of
+ * a stream are being prepared, and while the playhead is stopped with no data.
+ * A picture that is playing is never covered — not by a leftover flag, not by a
+ * `waiting` event that arrived while frames were still moving.
+ */
+const buffering = computed(() => {
+  if (error.value || fatal.value) return false
+  return stalled.value || (isLoading.value && !playedOnce.value)
+})
+
 /** What the spinner should say — never leave the user guessing. */
 const loadingText = computed(() => {
   if (play.value?.state === 'probing') {
@@ -777,7 +799,15 @@ const loadingText = computed(() => {
     const speed = rate !== null ? ` · 编码速度 ${rate.toFixed(2)}× 实时` : ''
     return `正在生成分片 · 已就绪 ${s.generated_seconds.toFixed(0)}s / ${streamNeeded}s${speed}`
   }
-  if (stallSeconds.value >= 3) return `正在缓冲… 已等待 ${stallSeconds.value.toFixed(0)}s`
+  // A stall is a question about the network, so the number shown is the one that
+  // answers it: how much is arriving right now. Seconds spent waiting say how long
+  // the viewer has been staring at a spinner, which is the part they can already
+  // see for themselves.
+  if (stallSeconds.value >= 3) {
+    return netMeasurable()
+      ? `正在缓冲… 网络速度 ${fmtNetSpeed(netSpeed.value)}`
+      : '正在缓冲… 正在等待数据'
+  }
   return modeLabel.value ? `正在准备播放 · ${modeLabel.value}` : '正在准备播放…'
 })
 /** Long enough that the source is clearly the problem, not a slow start. */
@@ -954,6 +984,10 @@ async function loadDecision(force, at) {
   error.value = ''
   fatal.value = ''
   isLoading.value = true
+  // A new decision means a new stream: nothing of the old picture is left to
+  // cover, so the center state may speak again until this one plays.
+  playedOnce.value = false
+  stalled.value = false
   // A fresh decision starts a fresh stream, so the saved position is looked at
   // again — except for a quality switch, which carries the viewer's position in
   // switchAt and must not have it overwritten by the progress saved a moment ago.
@@ -1309,13 +1343,31 @@ function onWaiting() {
   if (stallSince) return
   stallSince = Date.now()
   stallSeconds.value = 0
+  // The speed window starts with the wait, so the first number shown describes
+  // this stall rather than whatever the previous one ended on.
+  resetNet()
   clearInterval(stallTimer)
   stallTimer = setInterval(() => {
     stallSeconds.value = (Date.now() - stallSince) / 1000
+    sampleNet()
     const v = videoEl.value
-    // Paused and short of data is genuinely preparing; playing is only preparing
-    // once the playhead has stopped moving.
-    if (v && (v.paused || !playheadMoving())) isLoading.value = true
+    if (!v) return
+    // Frames are moving: whatever the events said, there is nothing to wait for.
+    if (!v.paused && playheadMoving()) {
+      stalled.value = false
+      isLoading.value = false
+      return
+    }
+    // Paused with a frame at the playhead is a viewer who pressed pause, not a
+    // stall: HAVE_CURRENT_DATA means the picture they are looking at is there, and
+    // covering it with a spinner would blame the network for a deliberate pause.
+    // A pending switch or resume is the exception — that picture is being replaced.
+    if (v.paused && v.readyState >= 2 && !switchAt.value && !resumeAt.value) {
+      clearStall()
+      return
+    }
+    stalled.value = true
+    isLoading.value = true
   }, 500)
 }
 
@@ -1325,6 +1377,7 @@ function onPlaying() {
   // the element reports, the viewer is not watching yet. The pending v.play() from
   // startCand can fire after that pause, so the hold is enforced here too.
   if (holdForSession()) { videoEl.value?.pause(); return }
+  playedOnce.value = true
   isLoading.value = false
   clearStall()
   kickDanmaku()
@@ -1338,6 +1391,7 @@ function onCanPlay() {
   const v = videoEl.value
   if (!v || v.readyState < 3) return
   if (holdForSession()) { v.pause(); return }
+  playedOnce.value = true
   isLoading.value = false
   clearStall()
 }
@@ -1376,14 +1430,133 @@ function markPlaying() {
   if (v.paused || !advanced || !(t > 0)) return
   if (holdForSession()) return
   tickMovedAt = Date.now()
+  playedOnce.value = true
   isLoading.value = false
   clearStall()
+}
+
+/**
+ * A stall the element never announced.
+ *
+ * `waiting` is the element's own word for "data ran out", and it is usually right
+ * — but a connection that hangs without an error can leave the element reporting
+ * HAVE_FUTURE_DATA while the picture stands still, and then the viewer watches a
+ * frozen frame with no spinner to explain it. The clock is the evidence that
+ * survives both, so the same stall state is also claimed from a watchdog: playing,
+ * not paused, not scrubbing, short of data, and the playhead has stopped.
+ */
+let watchTimer = 0
+function watchPlayhead() {
+  const v = videoEl.value
+  if (!v || v.paused || v.ended || scrubbing.value || !isPlaying.value) return
+  if (!(v.currentTime > 0) || playheadMoving() || stallSince) return
+  if (v.readyState >= 3) return
+  onWaiting()
 }
 
 function clearStall() {
   stallSince = 0
   stallSeconds.value = 0
+  stalled.value = false
   if (stallTimer) { clearInterval(stallTimer); stallTimer = null }
+}
+
+/* --------------------------------------------------------- 网络速度
+ *
+ * While the spinner is up, the number worth showing is how fast data is actually
+ * arriving — "0 KB/s" and "5 MB/s" are different situations, and only one of them
+ * is worth waiting for. Two sources feed one figure:
+ *
+ *   · the bytes hls.js reports for the fragment it is downloading (exact, and the
+ *     main path of this player);
+ *   · the growth of the buffer's end × the stream's bitrate (the only signal a
+ *     direct/302 MP4 or a native HLS element gives — bytes never pass through
+ *     this page in those modes).
+ *
+ * It decays on its own when data stops, so "the network died" is visible as a
+ * number falling to zero rather than as a spinner that never ends.
+ */
+const netSpeed = ref(0)     // bytes per second, 0 = nothing is arriving
+let netBytes = 0            // bytes hls.js reported since the last sample
+let netSeen = 0             // bytes already counted for the current fragment
+let netAt = 0               // start of the current sampling window
+let netBuffered = -1        // buffer end at the previous sample, -1 = no baseline
+
+/** What the stream is downloading, in bits per second. */
+const streamBitrate = computed(() => {
+  // hls.js knows the rung it actually picked, which is the honest number for a
+  // ladder — the file's average would be off by however much the rung differs.
+  const lvl = hls.value?.levels?.[hls.value?.currentLevel]
+  if (lvl && lvl.bitrate > 0) return lvl.bitrate
+  const size = currentFileSize()
+  const d = Number(duration.value) || Number(play.value?.duration) || 0
+  return size > 0 && d > 0 ? (size * 8) / d : 0
+})
+
+/** The size of the file being played, from whichever answer knows it. */
+function currentFileSize() {
+  const id = Number(route.params.fileId)
+  const f = (meta.value?.files || []).find((x) => Number(x.id) === id)
+  if (f?.size) return Number(f.size)
+  const v = (play.value?.versions || []).find((x) => x.current)
+  return Number(v?.size) || 0
+}
+
+function resetNet() {
+  netBytes = 0
+  netSeen = 0
+  netAt = performance.now()
+  netBuffered = -1
+  netSpeed.value = 0
+}
+
+/** A new fragment started loading: its byte counter begins at zero. */
+function onFragLoading() {
+  netSeen = 0
+}
+
+/** hls.js reports a cumulative byte count per fragment; keep the delta. */
+function onFragProgress(_, data) {
+  const loaded = Number(data?.stats?.loaded) || Number(data?.frag?.stats?.loaded) || 0
+  if (loaded > netSeen) {
+    netBytes += loaded - netSeen
+    netSeen = loaded
+  }
+}
+
+function sampleNet() {
+  const v = videoEl.value
+  const now = performance.now()
+  const dt = Math.max(0.25, (now - netAt) / 1000)
+  netAt = now
+  const byHls = netBytes > 0 ? netBytes / dt : 0
+  netBytes = 0
+  let byBuffer = 0
+  if (v?.buffered?.length) {
+    const end = v.buffered.end(v.buffered.length - 1)
+    const grew = netBuffered >= 0 ? end - netBuffered : 0
+    netBuffered = end
+    const bitrate = streamBitrate.value
+    if (grew > 0 && bitrate > 0) byBuffer = (grew * bitrate) / 8 / dt
+  }
+  const bps = Math.max(byHls, byBuffer)
+  netSpeed.value = bps > 0
+    ? (netSpeed.value > 0 ? netSpeed.value * 0.35 + bps * 0.65 : bps)
+    : netSpeed.value * 0.35
+  if (netSpeed.value < 2048) netSpeed.value = 0
+}
+
+function fmtNetSpeed(bps) {
+  const n = Math.max(0, Number(bps) || 0)
+  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(2)} MB/s`
+  if (n >= 1 << 10) return `${Math.round(n / 1024)} KB/s`
+  return `${Math.round(n)} B/s`
+}
+
+/** Can this playback be measured at all? Without an answer, no number is shown —
+ *  a made-up "0 B/s" would blame the network for something nobody measured. */
+function netMeasurable() {
+  return !!hls.value || streamBitrate.value > 0
 }
 
 const cands = ref([])
@@ -1471,6 +1644,11 @@ async function startCand(i) {
   if (!v) return
   destroyHls()
   resetStatsSamples()
+  resetNet()
+  // A new source has no picture yet: the center state is allowed again until this
+  // one really plays, and a stall inherited from the old source is not news.
+  playedOnce.value = false
+  stalled.value = false
   mediaRecovered = false
   netRestarted = false
   startStreamPoll()
@@ -1524,6 +1702,9 @@ async function startCand(i) {
         if (startPos > 0) hlsConfig.startPosition = startPos
         hls.value = new Hls(hlsConfig)
         hls.value.on(Hls.Events.FRAG_LOADED, rememberFragmentLoad)
+        // Byte-level progress, for the network speed shown during a stall.
+        hls.value.on(Hls.Events.FRAG_LOADING, onFragLoading)
+        hls.value.on(Hls.Events.FRAG_LOAD_PROGRESS, onFragProgress)
         hls.value.loadSource(src)
         hls.value.attachMedia(v)
         hls.value.on(Hls.Events.ERROR, onHlsError)
@@ -1603,6 +1784,9 @@ function retryCand(code) {
   const why = (code === 1 || code === 2) ? '网络中断' : '服务器还在生成分片'
   toast.info(`${why},继续用「${candName(c)}」重试(${candTries}/${RETRY_DELAYS.length})…`, 2400)
   isLoading.value = true
+  // The old source is about to be replaced: there is no picture to protect any
+  // more, so the center state is allowed to explain the wait.
+  playedOnce.value = false
   clearStall()
   const i = candIdx.value
   clearTimeout(switchTimer)
@@ -2821,6 +3005,9 @@ function goBack() {
 onMounted(() => {
   loadDecision()
   applyVolume()
+  // The stall watchdog (see watchPlayhead): one cheap read a second, and the only
+  // thing that notices a picture that stopped without saying so.
+  watchTimer = setInterval(watchPlayhead, 1000)
   window.addEventListener('beforeunload', saveProgress)
   window.addEventListener('keydown', onKey)
   window.addEventListener('resize', onViewport)
@@ -2859,6 +3046,7 @@ onBeforeUnmount(() => {
   stopProbePoll()
   stopStreamPoll()
   clearStall()
+  clearInterval(watchTimer)
   clearTimeout(hideTimer)
   clearTimeout(tapTimer)
   window.removeEventListener('beforeunload', saveProgress)
@@ -3053,7 +3241,7 @@ onBeforeUnmount(() => {
                  page shows its progress under the picture instead (see .wi-loading
                  below), where it cannot cover the picture or the play button. -->
             <Transition name="fade">
-              <div v-if="theaterChrome && isLoading && !error && !fatal" class="center-state">
+              <div v-if="theaterChrome && buffering && !error && !fatal" class="center-state">
                 <span class="ring" />
                 <div class="cs-text">{{ loadingText }}</div>
                 <div v-if="streamPct > 0" class="cs-bar" role="progressbar" :aria-valuenow="Math.round(streamPct)" aria-valuemin="0" aria-valuemax="100">
@@ -3414,7 +3602,7 @@ onBeforeUnmount(() => {
           <template v-if="isStacked">
             <!-- Preparing, as a long thin bar under the picture: centred on a 16:9
                  box it would sit exactly where the play button goes. -->
-            <div v-if="!theaterChrome && isLoading && !error && !fatal" class="wi-loading">
+            <div v-if="!theaterChrome && buffering && !error && !fatal" class="wi-loading">
               <div
                 class="wl-bar" :class="{ live: streamPct > 0 }" role="progressbar"
                 :aria-valuenow="Math.round(streamPct)" aria-valuemin="0" aria-valuemax="100"
