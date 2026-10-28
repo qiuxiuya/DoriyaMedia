@@ -118,10 +118,13 @@ const libForm = ref({
   // and a 番剧 library is often a cloud source plus a folder on this machine.
   sources: [{ source_id: '', path: '/' }],
   providers: ['nfo', 'bgm', 'tmdb'],
-  // What this library refuses to import. A new library follows the global list
-  // until someone gives it its own.
+  // What this library refuses to import: file-name keywords, and folder names
+  // skipped whole. A new library follows the global lists until someone gives it
+  // its own.
   excludeMode: 'inherit',
   excludes: [],
+  folderExcludeMode: 'inherit',
+  folderExcludes: [],
 })
 
 // A library's exclusion list is stored as json text; a hand-written row may be
@@ -199,6 +202,8 @@ function startEdit(lib) {
     name: lib.name, type: lib.type, sources: places, providers: provs,
     excludeMode: lib.exclude_mode === 'custom' ? 'custom' : 'inherit',
     excludes: parseKeywords(lib.excludes),
+    folderExcludeMode: lib.exclude_folder_mode === 'custom' ? 'custom' : 'inherit',
+    folderExcludes: parseKeywords(lib.exclude_folders),
     poster_mode: lib.poster_mode === 'static' ? 'static' : 'auto',
   }
   posterMissing.value = false
@@ -280,6 +285,8 @@ async function saveEdit(id) {
       providers: JSON.stringify(f.providers.length ? f.providers : ['nfo', 'bgm', 'tmdb']),
       exclude_mode: f.excludeMode === 'custom' ? 'custom' : 'inherit',
       excludes: JSON.stringify(f.excludes || []),
+      exclude_folder_mode: f.folderExcludeMode === 'custom' ? 'custom' : 'inherit',
+      exclude_folders: JSON.stringify(f.folderExcludes || []),
     })
     editing.value = null
     await loadAll()
@@ -557,6 +564,8 @@ async function addLibrary() {
       providers: JSON.stringify(f.providers.length ? f.providers : ['nfo', 'bgm', 'tmdb']),
       exclude_mode: f.excludeMode === 'custom' ? 'custom' : 'inherit',
       excludes: JSON.stringify(f.excludes || []),
+      exclude_folder_mode: f.folderExcludeMode === 'custom' ? 'custom' : 'inherit',
+      exclude_folders: JSON.stringify(f.folderExcludes || []),
     })
     libForm.value = {
       name: '', type: 'movie',
@@ -564,6 +573,8 @@ async function addLibrary() {
       providers: ['nfo', 'bgm', 'tmdb'],
       excludeMode: 'inherit',
       excludes: [],
+      folderExcludeMode: 'inherit',
+      folderExcludes: [],
     }
     addingLibrary.value = false
     await loadAll()
@@ -650,6 +661,7 @@ async function saveConfig() {
       // Sent even when empty: an empty list is how the user turns an exclusion
       // off, and the server writes exactly what it is given.
       exclude_keywords: (cfg.value.exclude_keywords || []).map((w) => String(w).trim()).filter(Boolean),
+      exclude_folders: (cfg.value.exclude_folders || []).map((w) => String(w).trim()).filter(Boolean),
       tmdb: cfg.value.tmdb,
       bgm: cfg.value.bgm,
       playback: cfg.value.playback,
@@ -1126,11 +1138,20 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                     </div>
                   </div>
                   <div class="field">
-                    <label>扫描排除</label>
+                    <label>扫描排除(文件名)</label>
                     <ExcludeKeywords
                       v-model="libForm.excludes"
                       v-model:mode="libForm.excludeMode"
                       :inherited="cfg?.exclude_keywords || []"
+                    />
+                  </div>
+                  <div class="field">
+                    <label>扫描排除(文件夹)</label>
+                    <ExcludeKeywords
+                      v-model="libForm.folderExcludes"
+                      v-model:mode="libForm.folderExcludeMode"
+                      :inherited="cfg?.exclude_folders || []"
+                      kind="folder"
                     />
                   </div>
                   <button class="btn primary" :disabled="!libForm.sources.some(s => s.source_id) || !libForm.name" @click="addLibrary">
@@ -1182,11 +1203,20 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   </div>
                 </div>
                 <div class="field">
-                  <label>扫描排除</label>
+                  <label>扫描排除(文件名)</label>
                   <ExcludeKeywords
                     v-model="editForm.excludes"
                     v-model:mode="editForm.excludeMode"
                     :inherited="cfg?.exclude_keywords || []"
+                  />
+                </div>
+                <div class="field">
+                  <label>扫描排除(文件夹)</label>
+                  <ExcludeKeywords
+                    v-model="editForm.folderExcludes"
+                    v-model:mode="editForm.folderExcludeMode"
+                    :inherited="cfg?.exclude_folders || []"
+                    kind="folder"
                   />
                 </div>
                 <div class="field">
@@ -1957,11 +1987,20 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <span class="hint">网盘源建议 2–4,本地磁盘可以更高。</span>
               </div>
               <div class="field wide">
-                <label>扫描排除(全局默认)</label>
+                <label>扫描排除(文件名,全局默认)</label>
                 <ExcludeKeywords v-model="cfg.exclude_keywords" />
                 <span class="hint">
                   命中的文件不会被导入媒体库——不当剧集、不当电影、不出卡片,也不会被刮削;文件浏览里仍然能播。
-                  下面的媒体库可以「跟随全局」或单独设一份。
+                  下面的媒体库可以「跟随全局」或单独设一份。用 /…/ 包起来就是正则,如 /(?i)^\[pv\d+\]$/。
+                </span>
+              </div>
+              <div class="field wide">
+                <label>扫描排除文件夹(全局默认)</label>
+                <ExcludeKeywords v-model="cfg.exclude_folders" kind="folder" />
+                <span class="hint">
+                  按文件夹名匹配,任意一层目录命中,它下面的文件就一律不入库——不当剧集、不当电影、不出卡片,也不会被刮削;
+                  文件浏览里仍然能播。适合「特典」「Extras」「Sample」这类目录。同样支持 /…/ 正则,如 /^(CD|DVD)\d+$/。
+                  两份名单默认都是空的,由你决定排除什么。
                 </span>
               </div>
             </div>
