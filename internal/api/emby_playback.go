@@ -50,7 +50,9 @@ func (s *Server) embyMediaSource(f *models.MediaFile, r *http.Request) map[strin
 		container = "mp4"
 	}
 	q := url.Values{"api_key": {embyToken(r)}, "MediaSourceId": {embyID(f.ID)}, "Static": {"true"}}
-	streamURL := "/emby/Videos/" + embyID(f.ItemID) + "/stream." + container + "?" + q.Encode()
+	// API URLs are relative to the client's configured server base, which may
+	// already end in /emby or /mediabrowser (as with subtitle DeliveryUrl).
+	streamURL := "/Videos/" + embyID(f.ItemID) + "/stream." + container + "?" + q.Encode()
 	streams := []map[string]any{}
 	audioIndex := -1
 	for _, st := range p.Streams {
@@ -96,7 +98,17 @@ func (s *Server) embyMediaSource(f *models.MediaFile, r *http.Request) map[strin
 		streams = append(streams, map[string]any{"Index": index, "Type": "Subtitle", "Codec": "webvtt", "Language": sub.Lang, "Title": sub.Title, "DisplayTitle": sub.Title, "IsExternal": true, "IsTextSubtitleStream": true, "SupportsExternalStream": true, "DeliveryMethod": "External", "DeliveryUrl": delivery, "IsDefault": false, "IsForced": false})
 	}
 	bitrate, _ := p.Format.BitRate.Int64()
-	return map[string]any{"Id": embyID(f.ID), "ItemId": embyID(f.ItemID), "Name": path.Base(f.Path), "Path": s.embyAbsoluteMediaURL(r, streamURL), "Protocol": "Http", "Type": "Default", "Container": container, "Size": f.Size, "RunTimeTicks": int64(p.Duration() * embyTicksPerSecond), "Bitrate": bitrate, "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "IsRemote": false, "ReadAtNativeFramerate": false, "RequiresOpening": false, "RequiresClosing": false, "RequiredHttpHeaders": map[string]string{}, "MediaStreams": streams, "DefaultAudioStreamIndex": audioIndex, "DefaultSubtitleStreamIndex": -1, "DirectStreamUrl": streamURL}
+	// Path is display metadata, not an authenticated transport URL. Exposing
+	// that URL here both displays the access token in media info and lets a
+	// direct-play client bypass PlaybackInfo (including multipart remuxing).
+	// Use a stable virtual file path; clients cannot access our source filesystem
+	// and must stream through the authenticated API instead.
+	name := path.Base(strings.ReplaceAll(f.Path, `\`, "/"))
+	if parsed, err := url.Parse(f.Path); err == nil && parsed.IsAbs() && parsed.Host != "" {
+		name = path.Base(parsed.Path)
+	}
+	virtualPath := "/media/" + embyID(f.ID) + "/" + name
+	return map[string]any{"Id": embyID(f.ID), "ItemId": embyID(f.ItemID), "Name": name, "Path": virtualPath, "Protocol": "File", "Type": "Default", "VideoType": "VideoFile", "Container": container, "Size": f.Size, "RunTimeTicks": int64(p.Duration() * embyTicksPerSecond), "Bitrate": bitrate, "SupportsDirectPlay": false, "SupportsDirectStream": true, "SupportsTranscoding": false, "IsRemote": false, "ReadAtNativeFramerate": false, "RequiresOpening": false, "RequiresClosing": false, "RequiredHttpHeaders": map[string]string{}, "MediaStreams": streams, "DefaultAudioStreamIndex": audioIndex, "DefaultSubtitleStreamIndex": -1, "DirectStreamUrl": streamURL}
 }
 func (s *Server) embyFile(itemID int64, sourceID string) (*models.MediaFile, error) {
 	if sourceID != "" {
@@ -218,13 +230,14 @@ func (s *Server) embyPlaybackInfo(w http.ResponseWriter, r *http.Request, u *mod
 			}
 			ms["SupportsDirectPlay"] = false
 			ms["Container"] = "m3u8"
-			ms["Path"] = s.embyAbsoluteMediaURL(r, decision.URL)
-			ms["DirectStreamUrl"] = decision.URL
-			ms["TranscodingUrl"] = decision.URL
-			ms["TranscodingContainer"] = "ts"
-			if s.Cfg.Playback.HLSSessionPackager {
-				ms["TranscodingContainer"] = "mp4"
-			}
+			// Native HLS is outside the Emby API base. Absolute URLs keep
+			// clients connected at /emby from requesting /emby/api/hls/...
+			hlsURL := s.embyAbsoluteMediaURL(r, decision.URL)
+			ms["DirectStreamUrl"] = hlsURL
+			ms["TranscodingUrl"] = hlsURL
+			// Multipart sources always use the fMP4 session packager, even
+			// when HLSSessionPackager is disabled for ordinary files.
+			ms["TranscodingContainer"] = "mp4"
 			ms["TranscodingSubProtocol"] = "hls"
 		}
 		sources = append(sources, ms)

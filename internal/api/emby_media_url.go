@@ -6,9 +6,8 @@ import (
 	"strings"
 )
 
-// MediaSource.Path with Protocol=Http is a playable HTTP resource, not the
-// server-relative API route used by DirectStreamUrl. Do not expose local disk
-// paths or upstream cookies; retain the existing authenticated stream endpoint.
+// Native HLS URLs live outside the client's Emby API base and must be absolute.
+// This helper is for transport URLs only, never display metadata such as Path.
 func (s *Server) embyAbsoluteMediaURL(r *http.Request, relative string) string {
 	ref, err := url.Parse(relative)
 	if err != nil {

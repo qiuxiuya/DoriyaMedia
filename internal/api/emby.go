@@ -174,6 +174,12 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 			known = false
 		}
 		if !prefixed && !known {
+			// Multipart PlaybackInfo returns native signed HLS URLs. The
+			// manifest, init and segments need the same restricted web-client
+			// CORS policy; their GET/HEAD requests still pass native auth.
+			if strings.HasPrefix(r.URL.Path, "/api/hls/") && embyWebCORS(w, r, "GET, HEAD, OPTIONS") {
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -186,25 +192,38 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		// Hosted official web clients are cross-origin. Do not enable cookie
 		// credentials or reflect arbitrary origins into authenticated responses.
-		w.Header().Add("Vary", "Origin")
-		if origin := r.Header.Get("Origin"); origin == "https://app.emby.media" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Expose-Headers", "X-Emby-ServerId")
-			if r.Method == http.MethodOptions {
-				w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Emby-Authorization, X-Emby-Token, X-MediaBrowser-Token, Range")
-				w.Header().Add("Vary", "Access-Control-Request-Method")
-				w.Header().Add("Vary", "Access-Control-Request-Headers")
-				embyServeLogged(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					r.Pattern = "OPTIONS Emby CORS preflight"
-					w.WriteHeader(http.StatusNoContent)
-				}), w, req)
-				return
-			}
+		if r.Method == http.MethodOptions && r.Header.Get("Origin") == "https://app.emby.media" {
+			embyServeLogged(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.Pattern = "OPTIONS Emby CORS preflight"
+				embyWebCORS(w, r, "GET, HEAD, POST, DELETE, OPTIONS")
+			}), w, req)
+			return
 		}
+		embyWebCORS(w, r, "GET, HEAD, POST, DELETE, OPTIONS")
 		embyServeLogged(mux, w, req)
 	})
 }
+
+// embyWebCORS only grants access to the official hosted web client. It handles
+// preflights, never authentication or actual playback requests.
+func embyWebCORS(w http.ResponseWriter, r *http.Request, methods string) bool {
+	w.Header().Add("Vary", "Origin")
+	if r.Header.Get("Origin") != "https://app.emby.media" {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", "https://app.emby.media")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Emby-ServerId, Content-Length, Content-Range, Accept-Ranges")
+	if r.Method != http.MethodOptions {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Methods", methods)
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Emby-Authorization, X-Emby-Token, X-MediaBrowser-Token, Range")
+	w.Header().Add("Vary", "Access-Control-Request-Method")
+	w.Header().Add("Vary", "Access-Control-Request-Headers")
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
 func (s *Server) embySession(r *http.Request, u *models.User) map[string]any {
 	h := sha256.Sum256([]byte(embyToken(r)))
 	return map[string]any{"Id": hex.EncodeToString(h[:16]), "UserId": embyID(u.ID), "UserName": u.Name, "ServerId": s.embyServerID(), "SupportsRemoteControl": false, "PlayableMediaTypes": []string{"Video"}, "AdditionalUsers": []any{}, "SupportedCommands": []string{}}
