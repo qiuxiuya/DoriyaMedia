@@ -7,7 +7,7 @@ DoriyaMedia 提供面向第三方 Emby 客户端的基础服务端协议适配�
 在「设置 → 系统 → Emby 设置」中管理兼容服务：
 
 - **Emby 开关**：保存后立即生效。默认启用,旧配置升级后保持原有行为；关闭后 Emby 接口返回 404,不影响网页和原生 API。已签发的原生 HLS 临时播放链接仍遵循原有有效期,开关不主动撤销这些链接。
-- **Emby 名称**：设置客户端读取的服务器名称,留空使用 `DoriyaMedia`。
+- **Emby 名称**：设置客户端读取的服务器名称,留空使用 `DoriyaMedia`。保存时去掉首尾空白,同时通过 `System/Info`、`System/Info/Public` 和 `System/Configuration` 三条接口下发;已保存的值重启后仍然有效。已连上的客户端会把首次连接时的名字写进自己的本地配置,改名后需要在客户端里删除该服务器并重新添加才会刷新,这不是服务端缓存问题。
 - **Emby 图标**：填写 HTTP(S) 图片 URL 或 `/` 开头的站内根相对路径,支持预览,留空使用默认图标。不支持协议相对地址（`//...`）、反斜杠或 `javascript:` / `data:` 地址。客户端必须能访问图片地址；服务器不代为下载远端图片。
 
 这些设置保存在配置文件的 `emby` 对象中（`enabled`、`name`、`icon`）,也可通过管理员配置 API 读取或按字段更新。部分客户端会缓存名称和品牌图片,更改后可能需要重新连接；图标能否展示取决于客户端是否使用服务器品牌接口。
@@ -61,6 +61,8 @@ B 站 DASH 等分离音视频源，在 PlaybackInfo 阶段复用现有转封装�
 直播未实现，但按客户端实际调用返回空结果而不是 404：`LiveTv/Info`、`LiveTv/Channels`、`LiveTv/Programs`、`LiveTv/Recordings`、`LiveTv/Timers`、`LiveTv/Series`、`LiveTv/Programs/Recommended`。策略中 `EnableLiveTvAccess` 保持 `false`。
 
 管理后台只读兜底：`ScheduledTasks`、`System/ActivityLog/Entries`、`web/ConfigurationPages`、`Localization/Cultures`、`Localization/Countries`、`Localization/ParentalRatings` 返回空集合或只有 `zh-CN`/`en-US` 的语言表，不执行任何管理操作，也不代表支持插件或任务调度。
+
+`GET /System/Configuration`（及 `/System/Configuration/Public`）返回服务器配置对象，其中 `ServerName` 与 `System/Info` 同源，供登录后仍会重新读取该接口的客户端使用；未实现的转码、内容删除/下载、直播、插件等能力统一为 `false`，不靠默认值暗示支持。`POST /System/Configuration` 返回 403 并说明改名在网页端进行：兼容层不接受客户端改名，也不假装保存成功。
 
 用户播放偏好 `POST /Users/{id}/Configuration` 与 `.../Configuration/Partial` 按用户持久化，只接受文档化的 `UserConfiguration` 字段（未知键丢弃），`GET /Users/{id}` 与登录响应中的 `Configuration` 会合并已保存值；数组字段始终返回数组，供客户端直接调用 `.includes()`。
 

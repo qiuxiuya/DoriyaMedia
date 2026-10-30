@@ -62,6 +62,44 @@ func (s *Server) embyServerID() string {
 func (s *Server) embySystemInfo() map[string]any {
 	return map[string]any{"Id": s.embyServerID(), "ServerName": s.Cfg.Emby.ServerName(), "Version": "4.8.0.0", "OperatingSystem": "DoriyaMedia", "ProductName": "DoriyaMedia", "StartupWizardCompleted": true, "SupportsLibraryMonitor": false, "SupportsLocalPortConfiguration": false}
 }
+
+// embyServerConfiguration is what the official clients read after signing in,
+// and several of them show its ServerName in the title bar and in the server
+// list instead of the public SystemInfo value. Answering 404 here is why a
+// renamed server kept displaying its old name: the client fell back to the name
+// it had cached at first connect. Every capability that is not implemented is
+// reported as false rather than implied.
+func (s *Server) embyServerConfiguration() map[string]any {
+	return map[string]any{
+		"ServerName":                     s.Cfg.Emby.ServerName(),
+		"UICulture":                      "zh-CN",
+		"PreferredMetadataLanguage":      "zh-CN",
+		"MetadataCountryCode":            "CN",
+		"IsStartupWizardCompleted":       true,
+		"EnableRemoteAccess":             true,
+		"EnableUPnP":                     false,
+		"EnableHttps":                    false,
+		"EnableCaseSensitiveItemIds":     false,
+		"EnableDashboardResponseCaching": true,
+		"EnableLiveTvManagement":         false,
+		"EnableLiveTvAccess":             false,
+		"EnableMediaPlayback":            true,
+		"EnableAudioPlaybackTranscoding": false,
+		"EnableVideoPlaybackTranscoding": false,
+		"EnablePlaybackRemuxing":         true,
+		"EnableContentDeletion":          false,
+		"EnableContentDownloading":       false,
+		"EnableSubtitleDownloading":      false,
+		"EnableSubtitleManagement":       false,
+		"EnableSyncTranscoding":          false,
+		"EnableMediaConversion":          false,
+		// The native player resumes below 5% from the start and treats 90% as
+		// finished, so these mirror the web UI instead of promising other limits.
+		"MinResumePct":        5,
+		"MaxResumePct":        90,
+		"LibraryMonitorDelay": 60,
+	}
+}
 func (s *Server) embyUser(u *models.User) map[string]any {
 	return map[string]any{"Id": embyID(u.ID), "Name": u.Name, "ServerId": s.embyServerID(), "HasPassword": true, "HasConfiguredPassword": true, "EnableAutoLogin": false, "Configuration": s.embyUserConfiguration(u), "Policy": map[string]any{"IsAdministrator": u.IsAdmin(), "IsDisabled": !u.CanLogin(), "EnableMediaPlayback": true, "EnableLiveTvAccess": false, "EnableLiveTvManagement": false, "EnableAudioPlaybackTranscoding": false, "EnableVideoPlaybackTranscoding": false, "EnableContentDeletion": false, "EnableAllFolders": true}}
 }
@@ -111,6 +149,23 @@ func (s *Server) embyMiddleware(next http.Handler) http.Handler {
 		})
 	}
 	secured("GET /system/info", func(w http.ResponseWriter, r *http.Request, u *models.User) { writeJSON(w, 200, s.embySystemInfo()) })
+	// The official clients re-read the server name here after signing in. It is
+	// public on purpose: the same name is already public through
+	// System/Info/Public, and some clients ask for it while reconnecting, before
+	// they have a token to present.
+	mux.HandleFunc("GET /system/configuration", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, s.embyServerConfiguration())
+	})
+	mux.HandleFunc("GET /system/configuration/public", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, s.embyServerConfiguration())
+	})
+	// Renaming is done in the web UI. Accepting a write here would let a client
+	// change a value the owner set, and silently ignoring it would look saved.
+	for _, p := range []string{"/system/configuration", "/system/configuration/partial"} {
+		mux.HandleFunc("POST "+p, func(w http.ResponseWriter, r *http.Request) {
+			fail(w, 403, "Server settings are managed in the DoriyaMedia web UI")
+		})
+	}
 	secured("GET /users/me", func(w http.ResponseWriter, r *http.Request, u *models.User) { writeJSON(w, 200, s.embyUser(u)) })
 	secured("GET /users/{user}", func(w http.ResponseWriter, r *http.Request, u *models.User) { writeJSON(w, 200, s.embyUser(u)) })
 	secured("GET /users", func(w http.ResponseWriter, r *http.Request, u *models.User) { writeJSON(w, 200, []any{s.embyUser(u)}) })

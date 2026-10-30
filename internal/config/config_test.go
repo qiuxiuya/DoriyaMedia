@@ -32,3 +32,16 @@ func TestDefaultsHaveNoExclusions(t *testing.T) {
 		t.Fatalf("defaults must be empty, got %v / %v", cfg.ExcludeKeywords, cfg.ExcludeFolders)
 	}
 }
+
+// The Emby server name the owner types is kept verbatim, and only a blank one
+// falls back to the product name. Trimming happens on save, not here, so a name
+// with meaningful inner spacing survives a reload.
+func TestEmbyServerName(t *testing.T) {
+	e := Emby{Name: "  我的 Emby  "}
+	if got := e.ServerName(); got != "我的 Emby" {
+		t.Errorf("ServerName() = %q, want the trimmed name", got)
+	}
+	if got := (Emby{Name: "   "}).ServerName(); got != "DoriyaMedia" {
+		t.Errorf("blank name must fall back, got %q", got)
+	}
+}

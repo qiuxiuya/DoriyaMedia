@@ -715,7 +715,9 @@ async function saveConfig() {
       users: cfg.value.users,
       smtp: cfg.value.smtp,
       turnstile: cfg.value.turnstile,
-      emby: cfg.value.emby,
+      // Send the name trimmed: the server stores what it is given, and a name
+      // that differs only by spaces would look like a failed save next reload.
+      emby: { ...cfg.value.emby, name: (cfg.value.emby?.name || '').trim() },
     })
     toast.ok('配置已保存,立即生效')
     await loadAll()
@@ -2038,7 +2040,12 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field">
                 <label for="emby-name">Emby 名称</label>
                 <input id="emby-name" v-model="cfg.emby.name" placeholder="DoriyaMedia" />
-                <span class="hint">客户端显示的服务器名称,留空使用 DoriyaMedia。</span>
+                <span class="hint">
+                  客户端显示的服务器名称,留空使用 DoriyaMedia。保存后由
+                  <code>System/Info</code> 与 <code>System/Configuration</code> 同时下发;
+                  已经连上的客户端会缓存旧名字,需要在客户端里删除服务器再重新添加
+                  (或重装客户端数据)才会刷新。
+                </span>
               </div>
               <div class="field">
                 <label for="emby-icon">Emby 图标</label>
