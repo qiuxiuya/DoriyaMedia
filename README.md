@@ -155,6 +155,79 @@ CGO_ENABLED=0 go build -ldflags "-s -w" -o doriyamedia ./cmd/doriyamedia
 >   国内网络两者都需要在 设置 → 刮削与播放 里勾选代理并填自己的地址;
 > - 端口 5666 是非特权端口,服务以专用用户 `doriyamedia` 运行,不需要 root。
 
+## 命令行(CLI)
+
+二进制自带一套子命令,和网页设置页操作的是同一个 `config.json` 和数据库,所以没有浏览器
+(或者服务正停着)时也能在 SSH 里把活干完。不带子命令时行为不变,仍然是启动服务。
+
+```
+doriyamedia                       # 启动服务(等价于 doriyamedia serve)
+doriyamedia help                  # 全部命令
+doriyamedia status                # 版本/端口/数据目录/媒体库与账号数量
+doriyamedia doctor                # 自检:ffmpeg、数据目录、数据库、管理员、代理
+```
+
+全局选项可以写在命令前,也可以写在命令后:`-config PATH`(或环境变量
+`DORIYAMEDIA_CONFIG`)、`-json`(机器可读输出)、`-quiet`、`-port`(仅 serve)。
+
+**存储源与媒体库**
+
+```
+doriyamedia source add --name 云盘 --type openlist --base-url http://host:5244 --token xxx
+doriyamedia source add --name 本地 --type local --root /srv/media
+doriyamedia source list
+doriyamedia source test --id 1              # 列一次根目录,确认凭据可用
+doriyamedia source update --id 1 --token 新token
+doriyamedia source rm --id 1 --yes
+
+doriyamedia library add --name 电影 --type movie --source-id 1 --path /Movies
+doriyamedia library list
+doriyamedia library update --id 1 --providers nfo,bgm,tmdb
+```
+
+`source add` 默认先做一次连接测试,连不上就不写库;确认无误可以加 `--no-test`。
+删除被媒体库引用的源、或删除媒体库本身,都需要显式 `--yes`。
+
+**扫描(会等它跑完)**
+
+```
+doriyamedia scan --id 1                     # 全库扫描,实时打印进度
+doriyamedia scan --name 电影
+doriyamedia scan --id 1 --source-id 1 --path /Movies/新片   # 只扫一个子目录
+doriyamedia scan --id 1 --json              # 结束时输出最终状态 JSON
+```
+
+CLI 的扫描和设置页的扫描走同一套代码,同样会刮削;区别是它在前台运行、跑完才退出,
+失败时退出码非 0。Ctrl+C 会请求取消而不是留下半个事务。注意这条命令不能和正在运行的
+服务同时写同一个库,大规模扫描建议停掉服务再跑。
+
+**账号**
+
+```
+doriyamedia user list
+doriyamedia user add --name admin --admin          # 省略 --password 则交互输入(不回显)
+doriyamedia user passwd --name admin               # 重置密码,并让已登录会话失效
+doriyamedia user role --name admin --role admin
+doriyamedia user status --name someone --status disabled
+doriyamedia user rm --name someone --yes
+```
+
+最后一个可用管理员不能被降级、禁用或删除——这一点和网页端一致。
+
+**配置与条目**
+
+```
+doriyamedia config path                     # 当前使用的配置文件
+doriyamedia config show                     # 打印配置(secret/密码/token 打码)
+doriyamedia config get playback.probe_size_mb
+doriyamedia config set port 8080            # 按原值类型写入,写错类型会拒绝
+doriyamedia item list --library-id 1 --limit 20
+doriyamedia item show 12                    # 条目详情与它的文件
+```
+
+`config set` 只改已存在的键,拼错的路径会报错而不是新增一个没人读的字段;
+改完需要重启服务(或在网页设置里保存一次)才生效。
+
 ## 发布新版本
 
 打 tag 即自动构建并发布 Release:
