@@ -1473,11 +1473,13 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field"><label>语言</label><input v-model="cfg.tmdb.language" placeholder="zh-CN" /></div>
               <div class="field">
                 <label>API 地址(可填镜像/反代)</label>
-                <input v-model="cfg.tmdb.api_base" placeholder="https://api.themoviedb.org/3" />
+                <input v-model="cfg.tmdb.api_base" placeholder="https://api.themoviedb.org" />
+                <span class="hint">只填域名即可,会自动补上 <b>/3</b>;结尾带不带 <b>/</b> 都行。镜像把接口挂在别的路径时,按你填的路径原样使用。</span>
               </div>
               <div class="field">
                 <label>图片地址(可填镜像/反代)</label>
-                <input v-model="cfg.tmdb.img_base" placeholder="https://image.tmdb.org/t/p" />
+                <input v-model="cfg.tmdb.img_base" placeholder="https://image.tmdb.org" />
+                <span class="hint">同样只填域名即可,会自动补上 <b>/t/p</b>;结尾带不带 <b>/</b> 都行。</span>
               </div>
               <div class="field wide">
                 <label>网络代理</label>

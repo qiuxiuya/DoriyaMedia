@@ -291,11 +291,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 		if req.TMDB.Language != "" {
 			s.Cfg.TMDB.Language = req.TMDB.Language
 		}
+		// A trailing slash is stripped here so "/3/" and "/3" are the same
+		// setting; the /3 prefix itself stays optional (the client adds it).
 		if req.TMDB.APIBase != "" {
-			s.Cfg.TMDB.APIBase = req.TMDB.APIBase
+			s.Cfg.TMDB.APIBase = strings.TrimRight(strings.TrimSpace(req.TMDB.APIBase), "/")
 		}
 		if req.TMDB.ImgBase != "" {
-			s.Cfg.TMDB.ImgBase = req.TMDB.ImgBase
+			s.Cfg.TMDB.ImgBase = strings.TrimRight(strings.TrimSpace(req.TMDB.ImgBase), "/")
 		}
 		if req.TMDB.UseProxy != nil {
 			s.Cfg.TMDB.UseProxy = *req.TMDB.UseProxy

@@ -744,6 +744,9 @@ pwsh scripts/bilibili-live-test.ps1 -Cookie "SESSDATA=…" # 带账号
 - 本地 nfo 支持 Kodi 格式:`movie.nfo` / `tvshow.nfo` / `*.nfo`、`poster.jpg`、`fanart.jpg` 等
   (支持网盘目录里直接读取);
 - TMDB 需要在 设置 → 刮削与播放 里填 API Key(免费,v3 密钥与 v4 读访问令牌都支持);
+- **地址只填域名就行**:API 地址填 `https://api.themoviedb.org`、图片地址填 `https://image.tmdb.org`,
+  程序会自动补上接口的 `/3` 与图片的 `/t/p`;结尾带不带 `/` 都一样。若镜像把接口挂在别的路径
+  (甚至挂在根上),则按你填的路径原样使用 —— 首次请求遇到 404 会自动换另一种写法,并记住可用的那个;
 - 国内网络两种走法:**① 勾选「走本地代理访问 TMDB」**并填代理地址(默认 `socks5://127.0.0.1:7890`,
   也支持 `http://`),TMDB 接口与海报/背景图下载都会走这个代理;② 把 API/图片地址改成镜像或自建反代。
   设置页有 **测试连接** 按钮,会实时区分「代理没启动 / 超时被墙 / Key 无效」;

@@ -116,8 +116,12 @@ func (c *Config) TurnstileEnabled() bool {
 type TMDB struct {
 	APIKey   string `json:"api_key"`
 	Language string `json:"language"`
-	APIBase  string `json:"api_base"`
-	ImgBase  string `json:"img_base"`
+	// APIBase / ImgBase accept either a bare host ("https://api.themoviedb.org")
+	// or a base that already carries the version prefix ("…/3"). The /3 and /t/p
+	// prefixes are part of TMDB's protocol, so the client appends them when the
+	// URL has no path of its own — a mirror mounted at the root keeps working.
+	APIBase string `json:"api_base"`
+	ImgBase string `json:"img_base"`
 	// UseProxy routes TMDB API calls and poster/backdrop downloads through a
 	// local proxy — required for api.themoviedb.org / image.tmdb.org from
 	// mainland China.
@@ -285,8 +289,8 @@ func Defaults() *Config {
 		FFProbe: "ffprobe",
 		TMDB: TMDB{
 			Language: "zh-CN",
-			APIBase:  "https://api.themoviedb.org/3",
-			ImgBase:  "https://image.tmdb.org/t/p",
+			APIBase:  "https://api.themoviedb.org",
+			ImgBase:  "https://image.tmdb.org",
 			Proxy:    DefaultTMDBProxy,
 		},
 		BGM: BGMTV{
@@ -361,17 +365,22 @@ func (c *Config) normalize() {
 		c.TMDB.Language = "zh-CN"
 	}
 	if c.TMDB.APIBase == "" {
-		c.TMDB.APIBase = "https://api.themoviedb.org/3"
+		c.TMDB.APIBase = "https://api.themoviedb.org"
 	}
 	if c.TMDB.ImgBase == "" {
-		c.TMDB.ImgBase = "https://image.tmdb.org/t/p"
+		c.TMDB.ImgBase = "https://image.tmdb.org"
 	}
+	// Trailing slashes are noise: the client joins bases with its own separator,
+	// and "…/3/" would otherwise produce "…/3//search/movie".
+	c.TMDB.APIBase = strings.TrimRight(strings.TrimSpace(c.TMDB.APIBase), "/")
+	c.TMDB.ImgBase = strings.TrimRight(strings.TrimSpace(c.TMDB.ImgBase), "/")
 	if c.TMDB.Proxy == "" {
 		c.TMDB.Proxy = DefaultTMDBProxy
 	}
 	if c.BGM.APIBase == "" {
 		c.BGM.APIBase = "https://api.bgm.tv"
 	}
+	c.BGM.APIBase = strings.TrimRight(strings.TrimSpace(c.BGM.APIBase), "/")
 	if c.BGM.Proxy == "" {
 		c.BGM.Proxy = DefaultTMDBProxy
 	}
