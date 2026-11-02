@@ -3,7 +3,7 @@
 # DoriyaMedia 一键安装 / 升级脚本
 # 适用：Debian 12/13、Ubuntu 22.04/24.04 及其衍生版（x86_64 / arm64 / armv7）
 #
-#   curl -fsSL https://raw.githubusercontent.com/nekofinley/DoriyaMedia/main/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/qiuxiuya/DoriyaMedia/main/scripts/install.sh | sudo bash
 #
 # 直连 GitHub 不通时会自动回退到加速镜像，一般不用手动指定；
 # 想固定某个源就加：
@@ -13,11 +13,11 @@
 #
 set -euo pipefail
 
-REPO="nekofinley/DoriyaMedia"
+REPO="qiuxiuya/DoriyaMedia"
 SERVICE="doriyamedia"
 BIN_PATH="/usr/local/bin/${SERVICE}"
 DM_PATH="/usr/local/bin/dm"
-DATA_DIR="/var/lib/doriyamedia"
+DATA_DIR="/opt/doriyamedia"
 CONFIG_PATH="${DATA_DIR}/config.json"
 UNIT_PATH="/etc/systemd/system/${SERVICE}.service"
 SERVICE_USER="doriyamedia"
@@ -40,6 +40,8 @@ INSTALL_FFMPEG=1
 AUTOSTART=1
 UNINSTALL=0
 PURGE=0
+# --data-dir 是否由用户显式给出（显式给出时绝不做任何自动迁移）
+DATA_DIR_GIVEN=0
 
 # ---------------------------------------------------------------- 输出
 
@@ -89,7 +91,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -v|--version)  VERSION="${2:-}"; shift 2 ;;
     -p|--port)     PORT="${2:-}"; shift 2 ;;
-    --data-dir)    DATA_DIR="${2:-}"; shift 2 ;;
+    --data-dir)    DATA_DIR="${2:-}"; DATA_DIR_GIVEN=1; shift 2 ;;
     --user)        SERVICE_USER="${2:-}"; shift 2 ;;
     --base-url)    BASE_URL_OPT="${2:-}"; shift 2 ;;
     --no-ffmpeg)   INSTALL_FFMPEG=0; shift ;;
@@ -225,6 +227,9 @@ build_prefixes
 
 # ---------------------------------------------------------------- 卸载
 
+# 旧版本的默认数据目录；升级安装时会自动迁移到 DATA_DIR
+LEGACY_DATA_DIR="/var/lib/doriyamedia"
+
 uninstall() {
   log "卸载 DoriyaMedia"
   if [ "$HAVE_SYSTEMD" -eq 1 ]; then
@@ -242,9 +247,16 @@ uninstall() {
   if [ "$PURGE" -eq 1 ]; then
     rm -rf "$DATA_DIR"
     ok "已删除数据目录 $DATA_DIR"
+    if [ "$LEGACY_DATA_DIR" != "$DATA_DIR" ] && [ -d "$LEGACY_DATA_DIR" ]; then
+      rm -rf "$LEGACY_DATA_DIR"
+      ok "已删除旧数据目录 $LEGACY_DATA_DIR"
+    fi
     id -u "$SERVICE_USER" >/dev/null 2>&1 && userdel "$SERVICE_USER" 2>/dev/null || true
   elif [ -d "$DATA_DIR" ]; then
     warn "数据目录保留在 $DATA_DIR（要一并删除请用 --purge）"
+    if [ "$LEGACY_DATA_DIR" != "$DATA_DIR" ] && [ -d "$LEGACY_DATA_DIR" ]; then
+      warn "旧版本留下的 $LEGACY_DATA_DIR 也还在，可手动删除"
+    fi
   fi
   exit 0
 }
@@ -319,11 +331,11 @@ install_ffmpeg() {
     return
   fi
   if [ "$INSTALL_FFMPEG" -eq 0 ]; then
-    warn "按 --no-ffmpeg 跳过；没有 ffmpeg 时只有 302 直连可用，转封装/转码/字幕会失败"
+    warn "按 --no-ffmpeg 跳过；没有 ffmpeg 时只有 302 直连可用，转封装与字幕转换会失败"
     return
   fi
   if ! command -v apt-get >/dev/null 2>&1; then
-    warn "没有 apt-get，请自行安装 ffmpeg，否则转封装/转码不可用"
+    warn "没有 apt-get，请自行安装 ffmpeg，否则转封装与字幕转换不可用"
     return
   fi
   log "安装 ffmpeg（转封装 / HLS / 字幕需要）"
@@ -375,15 +387,21 @@ DORIYA_DM_ENV
 set -u
 
 SERVICE="doriyamedia"
-REPO="nekofinley/DoriyaMedia"
+REPO="qiuxiuya/DoriyaMedia"
 BIN_PATH="/usr/local/bin/doriyamedia"
-DATA_DIR="/var/lib/doriyamedia"
+DATA_DIR="/opt/doriyamedia"
+LEGACY_DATA_DIR="/var/lib/doriyamedia"
 SERVICE_USER="doriyamedia"
 NO_FFMPEG=0
 
 ENV_FILE="/etc/doriyamedia/dm.env"
 if [ -f "$ENV_FILE" ]; then
   . "$ENV_FILE"
+fi
+# dm.env 可能是旧版写的，数据目录记的是 /var/lib/doriyamedia。
+# 新目录已经存在就用新的，免得 status 显示一个不存在的路径。
+if [ "$DATA_DIR" = "$LEGACY_DATA_DIR" ] && [ -d "/opt/doriyamedia" ]; then
+  DATA_DIR="/opt/doriyamedia"
 fi
 CONFIG_PATH="${DATA_DIR}/config.json"
 UNIT_PATH="/etc/systemd/system/${SERVICE}.service"
@@ -517,7 +535,15 @@ cmd_update() {
   DM_TMP="$(mktemp -d)"
   trap 'rm -rf "$DM_TMP"' EXIT
   fetch_installer "$DM_TMP/install.sh" || { warn "下载安装脚本失败：官方和镜像都不通"; return 1; }
-  local args=(--version "$want" --data-dir "$DATA_DIR" --user "$SERVICE_USER")
+  # dm.env 里可能是旧版的 /var/lib/doriyamedia。只要它还是默认位置（旧的或新的），
+  # 就不把路径传回去 —— 让安装脚本走默认值，并顺带把旧目录迁移到 /opt/doriyamedia。
+  local args=(--version "$want")
+  if [ "$DATA_DIR" != "$LEGACY_DATA_DIR" ] && [ "$DATA_DIR" != "/opt/doriyamedia" ]; then
+    args+=(--data-dir "$DATA_DIR")
+  fi
+  if [ "$SERVICE_USER" != "doriyamedia" ]; then
+    args+=(--user "$SERVICE_USER")
+  fi
   if [ "$NO_FFMPEG" -eq 1 ]; then
     args+=(--no-ffmpeg)
   fi
@@ -622,8 +648,16 @@ do_uninstall() {  # $1 = 是否连数据一起删
     rm -rf "$DATA_DIR"
     id -u "$SERVICE_USER" >/dev/null 2>&1 && userdel "$SERVICE_USER" 2>/dev/null || true
     ok "已删除数据目录 $DATA_DIR"
+    # 只有用默认目录时才顺手动旧版本的 /var/lib 目录，避免误删别人的安装
+    if [ "$DATA_DIR" = "/opt/doriyamedia" ] && [ -d "$LEGACY_DATA_DIR" ]; then
+      rm -rf "$LEGACY_DATA_DIR"
+      ok "已删除旧数据目录 $LEGACY_DATA_DIR"
+    fi
   elif [ -d "$DATA_DIR" ]; then
     warn "数据目录保留在 $DATA_DIR（要一并删除用 dm purge）"
+    if [ "$DATA_DIR" = "/opt/doriyamedia" ] && [ -d "$LEGACY_DATA_DIR" ]; then
+      warn "旧版本留下的 $LEGACY_DATA_DIR 也还在，可手动删除"
+    fi
   fi
   rm -rf /etc/doriyamedia
   ok "已卸载，dm 命令一并移除"
@@ -731,6 +765,48 @@ elif command -v ffmpeg >/dev/null 2>&1; then
   ok "ffmpeg / ffprobe 已就绪"
 fi
 
+# ---------------------------------------------------------------- 数据目录迁移
+#
+# 旧版本的默认数据目录是 /var/lib/doriyamedia，现在改成 /opt/doriyamedia。
+# 升级时直接把旧目录搬过来，并同步改掉 config.json 里的 data_dir，
+# 否则数据库、图片缓存和站点外观都会“凭空消失”。
+LEGACY_DATA_DIR="/var/lib/doriyamedia"
+migrate_legacy_data_dir() {
+  [ "$DATA_DIR" = "$LEGACY_DATA_DIR" ] && return 0
+  [ -d "$LEGACY_DATA_DIR" ] || return 0
+  if [ -e "$DATA_DIR" ] && [ -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
+    warn "旧数据目录 ${LEGACY_DATA_DIR} 仍然存在，但 ${DATA_DIR} 已有内容"
+    warn "  为了不覆盖现有数据，这次不做迁移；请手动确认后再删除旧目录"
+    return 0
+  fi
+  log "迁移旧数据目录 ${LEGACY_DATA_DIR} → ${DATA_DIR}"
+  mkdir -p "$(dirname "$DATA_DIR")"
+  # 目标目录若已存在（上次失败留下的空目录），必须先删掉：
+  # 否则 mv 会把它当成父目录，搬成 ${DATA_DIR}/doriyamedia。
+  if [ -d "$DATA_DIR" ]; then
+    rmdir "$DATA_DIR" 2>/dev/null || true
+  fi
+  if mv "$LEGACY_DATA_DIR" "$DATA_DIR" 2>/dev/null; then
+    : # 同一文件系统内重命名即可；跨设备时 mv 自己会复制再删除
+  else
+    cp -a "${LEGACY_DATA_DIR}/." "$DATA_DIR/" || die "数据目录迁移失败：${LEGACY_DATA_DIR} → ${DATA_DIR}"
+    rm -rf "$LEGACY_DATA_DIR"
+  fi
+  # 配置里写死的绝对路径也要跟着改，不然服务会去旧路径找数据库
+  if [ -f "${DATA_DIR}/config.json" ]; then
+    sed -i "s|${LEGACY_DATA_DIR}|${DATA_DIR}|g" "${DATA_DIR}/config.json"
+  fi
+  ok "已迁移到 ${DATA_DIR}（含 config.json 里的 data_dir）"
+}
+
+if [ "$DATA_DIR_GIVEN" -eq 0 ]; then
+  # 迁移前先停服务：复制式迁移时，旧进程继续写会写到已经被删掉的 inode 上
+  if [ "$HAVE_SYSTEMD" -eq 1 ]; then
+    systemctl stop "$SERVICE" 2>/dev/null || true
+  fi
+  migrate_legacy_data_dir
+fi
+
 log "准备数据目录 ${DATA_DIR}"
 mkdir -p "$DATA_DIR"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -782,7 +858,7 @@ ExecStart=${BIN_PATH} -config ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=3
 
-# HLS 分片 / 转码会频繁拉起 ffmpeg 子进程
+# HLS 分片 / 转封装会频繁拉起 ffmpeg 子进程
 LimitNOFILE=65535
 
 # 加固：本机来源的媒体（/home、/mnt、/srv 等）仍需可读，所以 home 只读不隐藏
