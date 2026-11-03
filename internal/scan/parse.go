@@ -97,10 +97,10 @@ var reTitleSep = regexp.MustCompile(`\s*[/|｜❘]\s*`)
 
 // The leading part of a bracket that carries a label. Written as two patterns
 // rather than one so it is unambiguous which text is the number: either the
-// number with its version glued on ("12v2"), or the plain number, leaving " v2"
-// to be read as the version it is.
+// number with a version ("12v2", "12 v2", "12_v2"), or the plain number.
+// Spaces and underscores may separate the episode from its release version.
 var (
-	reBracketEpVersion = regexp.MustCompile(`(?i)^(\d{1,4}(?:\.\d)?)v\d+`)
+	reBracketEpVersion = regexp.MustCompile(`(?i)^(\d{1,4}(?:\.\d)?)[\s_]*v\d+`)
 	reBracketEpPlain   = regexp.MustCompile(`^(\d{1,4}(?:\.\d)?)`)
 )
 
