@@ -733,7 +733,10 @@ select option { background: var(--bg-2); color: var(--text-1); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.poster .cap .s { font-size: var(--fs-12); color: var(--text-4); margin-top: 2px; }
+.poster .cap .s {
+  font-size: var(--fs-12); color: var(--text-4); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .poster:hover { transform: translateY(-5px); }
 .poster:hover .art { border-color: var(--line-3); box-shadow: var(--sh-3); }

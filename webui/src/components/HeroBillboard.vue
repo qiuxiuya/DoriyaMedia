@@ -157,7 +157,8 @@ function genresOf(it) {
   padding-bottom: clamp(28px, 5vw, 64px);
   padding-top: calc(var(--header-h) + 40px);
 }
-.copy { max-width: min(660px, 62vw); }
+.copy { max-width: min(660px, 62vw); min-width: 0; overflow-wrap: anywhere; }
+.meta .badge.plain { min-width: 0; max-width: 100%; height: auto; min-height: 22px; white-space: normal; }
 /* the copy block is re-keyed on every slide, so these play per rotation */
 .copy > * { animation: cardIn 620ms var(--ease-out) backwards; }
 .copy > *:nth-child(1) { animation-delay: 60ms; }

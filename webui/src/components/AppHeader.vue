@@ -60,7 +60,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
 })
 
-watch(() => route.fullPath, () => { menuOpen.value = false; browseOpen.value = '' })
+watch(() => route.fullPath, () => { menuOpen.value = false; browseOpen.value = ''; searching.value = false })
 
 async function onAccountAction(action) {
   menuOpen.value = false

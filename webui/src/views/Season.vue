@@ -219,7 +219,8 @@ onMounted(load)
   box-shadow: var(--sh-3);
   background: var(--bg-2);
 }
-.copy { flex: 1; min-width: 0; }
+.copy { flex: 1; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.copy .meta .badge { max-width: 100%; height: auto; min-height: 22px; white-space: normal; }
 .crumb { display: flex; align-items: center; gap: 6px; color: var(--text-4); margin-bottom: 10px; }
 .crumb a:hover { color: var(--text-1); }
 .title { margin-bottom: 10px; text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6); }
@@ -229,7 +230,11 @@ onMounted(load)
 .body { padding-top: clamp(18px, 2.6vw, 32px); }
 .season-switch { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: var(--sp-5); }
 .season-switch .label { font-size: var(--fs-12); font-weight: 600; color: var(--text-4); }
-.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.chips .chip, .ver-picker .chip {
+  min-width: 0; max-width: 100%; height: auto; min-height: 34px;
+  white-space: normal; overflow-wrap: anywhere;
+}
 
 .eps { display: flex; flex-direction: column; gap: var(--sp-3); }
 .ep {
@@ -288,9 +293,9 @@ onMounted(load)
 }
 .ep:hover .play-chip { opacity: 1; }
 .ep-main { flex: 1; min-width: 0; }
-.ep-head { display: flex; align-items: center; gap: 10px; }
-.ep-name { font-size: var(--fs-15); font-weight: 650; }
-.ep-sub { display: flex; align-items: center; gap: 14px; margin-top: 5px; }
+.ep-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.ep-name { min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-15); font-weight: 650; }
+.ep-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 5px; }
 .ep-sub svg { display: inline-block; vertical-align: -2px; }
 .ep-ov { color: var(--text-3); font-size: var(--fs-13); line-height: 1.6; margin: 8px 0 0; max-width: 82ch; }
 .ep-right { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; flex: none; }
@@ -302,12 +307,26 @@ onMounted(load)
 }
 @media (max-width: 720px) {
   .banner { min-height: 40vh; }
-  .banner-inner { flex-direction: column; align-items: flex-start; }
-  .poster { width: 96px; }
+  .banner-inner {
+    display: grid;
+    grid-template-columns: clamp(80px, 25vw, 104px) minmax(0, 1fr);
+    align-items: start;
+    gap: 16px;
+    padding-top: calc(var(--header-h) + 32px + env(safe-area-inset-top, 0px));
+  }
+  .copy { display: contents; }
+  .copy > * { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+  .crumb { grid-row: 1; flex-wrap: wrap; }
+  .poster-link { grid-column: 1; grid-row: 2; }
+  .poster { width: 100%; }
+  .copy > .title { grid-column: 2; grid-row: 2; font-size: clamp(22px, 6vw, 30px); }
   .ep { padding: var(--sp-3); gap: var(--sp-3); }
+  .ep-main { flex-basis: 100%; }
+  .ep-right { flex-wrap: wrap; gap: var(--sp-3); }
   .ep-no { width: 22px; font-size: var(--fs-18); }
   .ep-still { width: 118px; }
   .ep-ov { display: none; }
-  .ver-picker { max-width: none; }
+  .ver-picker { min-width: 0; max-width: 100%; }
+  .section-head { flex-wrap: wrap; }
 }
 </style>

@@ -105,6 +105,12 @@ function seasonBackdrop(s) {
       <div class="hero-scrim"></div>
 
       <div class="hero-inner page">
+        <div class="crumb">
+          <router-link :to="backTarget" class="tiny">
+            <AppIcon name="arrowLeft" :size="13" /> {{ isEpisode ? '返回剧集' : '返回' }}
+          </router-link>
+        </div>
+
         <div class="poster-wrap">
           <div class="poster">
             <SmartImage :src="artIf(item, 'poster')" :alt="item.name" :seed="item.name" />
@@ -112,14 +118,10 @@ function seasonBackdrop(s) {
         </div>
 
         <div class="head">
-          <div class="crumb">
-            <router-link :to="backTarget" class="tiny">
-              <AppIcon name="arrowLeft" :size="13" /> {{ isEpisode ? '返回剧集' : '返回' }}
-            </router-link>
+          <div class="identity">
+            <h1 class="display-1 title">{{ item.name }}</h1>
+            <div v-if="item.original_title && item.original_title !== item.name" class="orig">{{ item.original_title }}</div>
           </div>
-
-          <h1 class="display-1 title">{{ item.name }}</h1>
-          <div v-if="item.original_title && item.original_title !== item.name" class="orig">{{ item.original_title }}</div>
 
           <div class="meta">
             <span v-if="item.rating" class="badge rating"><AppIcon name="star" :size="11" filled />{{ Number(item.rating).toFixed(1) }}</span>
@@ -313,9 +315,10 @@ function seasonBackdrop(s) {
 .hero-inner {
   position: relative;
   width: 100%;
-  display: flex;
-  gap: clamp(20px, 3vw, 40px);
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px clamp(20px, 3vw, 40px);
+  align-items: end;
   padding-top: calc(var(--header-h) + 60px);
   padding-bottom: clamp(24px, 4vw, 48px);
 }
@@ -329,8 +332,9 @@ function seasonBackdrop(s) {
   box-shadow: var(--sh-4);
   background: var(--bg-2);
 }
-.head { flex: 1; min-width: 0; padding-bottom: 4px; }
-.crumb { margin-bottom: 12px; }
+.head { flex: 1; min-width: 0; padding-bottom: 4px; overflow-wrap: anywhere; }
+.head .meta .badge { max-width: 100%; height: auto; min-height: 22px; white-space: normal; }
+.crumb { grid-column: 1 / -1; min-width: 0; }
 .crumb a { display: inline-flex; align-items: center; gap: 6px; color: var(--text-3); }
 .crumb a:hover { color: var(--text-1); }
 .title { margin-bottom: 8px; text-shadow: 0 6px 36px rgba(0, 0, 0, 0.62); }
@@ -406,11 +410,14 @@ function seasonBackdrop(s) {
 }
 .season-card:hover .play-chip { opacity: 1; transform: translateY(0); }
 .season-card .meta { padding: 12px 14px; }
-.season-card .meta .n { font-size: var(--fs-15); font-weight: 650; margin-bottom: 2px; }
+.season-card .meta .n { min-width: 0; max-width: 100%; font-size: var(--fs-15); font-weight: 650; margin-bottom: 2px; }
 
 /* files */
 .files-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--sp-5); align-items: start; }
-.versions { display: flex; flex-direction: column; gap: var(--sp-3); }
+.versions { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.tech-card { min-width: 0; overflow-wrap: anywhere; }
+.tech-item > div { min-width: 0; }
+.tech-badges .badge { max-width: 100%; height: auto; min-height: 22px; white-space: normal; }
 .version-card {
   position: relative;
   display: flex;
@@ -451,22 +458,26 @@ function seasonBackdrop(s) {
 .detail-skeleton { padding-top: calc(var(--header-h) + 80px); }
 
 @media (max-width: 1080px) {
-  .files-layout { grid-template-columns: 1fr; }
+  .files-layout { grid-template-columns: minmax(0, 1fr); }
   .tech-card { position: static; }
 }
 @media (max-width: 720px) {
-  /* the cover floats over the artwork; the text block stays bottom-aligned */
   .hero { min-height: min(56vh, 420px); }
-  .hero-inner { flex-direction: column; align-items: stretch; gap: 0; }
-  .poster-wrap {
-    position: absolute;
-    top: calc(var(--header-h) + 14px);
-    right: var(--gutter);
-    width: 104px;
+  .hero-inner {
+    grid-template-columns: clamp(80px, 25vw, 104px) minmax(0, 1fr);
+    align-items: start;
+    gap: 16px;
+    padding-top: calc(var(--header-h) + 32px + env(safe-area-inset-top, 0px));
   }
-  .poster { width: 104px; border-radius: var(--r-m); }
-  .head { padding-bottom: 0; }
-  .title { font-size: clamp(24px, 7.5vw, 32px); }
+  .crumb { grid-row: 1; }
+  .poster-wrap { grid-column: 1; grid-row: 2; }
+  .poster { width: 100%; border-radius: var(--r-m); }
+  .head { display: contents; }
+  .head > * { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+  .head > .identity { grid-column: 2; grid-row: 2; }
+  .title { font-size: clamp(22px, 6vw, 30px); }
+  .orig { font-size: var(--fs-13); margin-bottom: 0; }
+  .meta { margin-bottom: 0; }
   .overview { -webkit-line-clamp: 3; font-size: var(--fs-14); }
   .actions .btn { flex: 1; min-width: 128px; }
   .pin-pop { right: auto; left: 0; }

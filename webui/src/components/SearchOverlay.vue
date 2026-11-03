@@ -1,10 +1,10 @@
 <script setup>
-import { ref, watch, computed, nextTick } from 'vue'
+import { ref, watch, computed, nextTick, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
 import PosterCard from './PosterCard.vue'
-import SmartImage from './SmartImage.vue'
-import { api, imgUrl } from '../api.js'
+import { api } from '../api.js'
+import { enrichSearchResults, searchSubtitle, searchTarget } from '../search.js'
 
 /**
  * Command-palette style search across every media library.
@@ -29,6 +29,15 @@ const catalog = ref([])
 const catalogLoading = ref(false)
 const catalogWarning = ref('')
 let catalogSeq = 0
+let searchSeq = 0
+
+function cancelSearch() {
+  clearTimeout(timer)
+  clearTimeout(catalogTimer)
+  searchSeq++
+  catalogSeq++
+}
+onBeforeUnmount(cancelSearch)
 
 watch(() => props.open, async (v) => {
   if (v) {
@@ -36,10 +45,13 @@ watch(() => props.open, async (v) => {
     input.value?.focus()
     if (!recents.value.length) loadRecents()
   } else {
+    cancelSearch()
     q.value = ''
     results.value = []
     catalog.value = []
+    loading.value = false
     catalogLoading.value = false
+    catalogWarning.value = ''
   }
 })
 
@@ -55,7 +67,9 @@ let timer = null
 let catalogTimer = null
 watch(q, () => {
   active.value = 0
-  clearTimeout(timer)
+  cancelSearch()
+  catalogWarning.value = ''
+  catalogLoading.value = false
   const term = q.value.trim()
   if (!term) {
     results.value = []
@@ -73,7 +87,9 @@ watch(q, () => {
 })
 
 async function run() {
+  const seq = searchSeq
   const term = q.value.trim()
+  if (!props.open || !term) return
   const libs = props.libraries.length ? props.libraries : []
   try {
     const lists = await Promise.all(libs.map((l) =>
@@ -93,9 +109,11 @@ async function run() {
       const bs = b.name.toLowerCase().startsWith(low) ? 0 : 1
       return as - bs || (b.rating || 0) - (a.rating || 0) || a.name.localeCompare(b.name)
     })
-    results.value = merged.slice(0, 60)
+    if (seq !== searchSeq) return
+    const enriched = await enrichSearchResults(merged.slice(0, 60), (id) => api.get(`/api/items/${id}`))
+    if (seq === searchSeq) results.value = enriched
   } finally {
-    loading.value = false
+    if (seq === searchSeq) loading.value = false
   }
 }
 
@@ -144,11 +162,20 @@ function openCatalog(hit) {
   })
 }
 
-const shown = computed(() => (q.value.trim() ? results.value : recents.value))
+const groups = computed(() => {
+  if (!q.value.trim()) return [{ key: 'recent', label: '', items: recents.value }]
+  return [
+    { key: 'titles', label: '电影 / 剧集', items: results.value.filter((it) => !['season', 'episode'].includes(it.type)) },
+    { key: 'seasons', label: '季', items: results.value.filter((it) => it.type === 'season') },
+    { key: 'episodes', label: '单集', items: results.value.filter((it) => it.type === 'episode') },
+  ].filter((group) => group.items.length)
+})
+const shown = computed(() => groups.value.flatMap((group) => group.items))
+const resultBadge = (item) => ({ season: '季', episode: '单集' }[item.type] || '')
 
 function go(item) {
   emit('update:open', false)
-  router.push(`/item/${item.id}`)
+  router.push(searchTarget(item))
 }
 
 function onKeydown(e) {
@@ -190,14 +217,20 @@ function onKeydown(e) {
               <div class="tiny">媒体库里没有,B 站片库里也没有相近的番剧</div>
             </div>
 
-            <div v-if="shown.length" class="results stagger">
-              <PosterCard
-                v-for="(it, i) in shown" :key="it.id" :item="it"
-                :class="{ active: i === active }"
-                :style="{ '--i': Math.min(i, 11) }"
-                @mouseenter="active = i"
-              />
-            </div>
+            <section v-for="group in groups" :key="group.key" class="result-group">
+              <div v-if="group.label" class="hint-row">{{ group.label }} · {{ group.items.length }}</div>
+              <div class="results stagger">
+                <PosterCard
+                  v-for="(it, i) in group.items" :key="it.id" :item="it"
+                  :to="searchTarget(it)"
+                  :subtitle="searchSubtitle(it)" :badge="resultBadge(it)"
+                  :class="{ active: shown[active]?.id === it.id }"
+                  :style="{ '--i': Math.min(i, 11) }"
+                  @mouseenter="active = shown.findIndex((item) => item.id === it.id)"
+                  @click="emit('update:open', false)"
+                />
+              </div>
+            </section>
 
             <!-- Catalogue results: on bilibili, not in any library. Clicking one
                  imports its whole series, with a live loading page. -->
@@ -288,6 +321,7 @@ function onKeydown(e) {
 }
 .q {
   flex: 1;
+  min-width: 0;
   border: none;
   background: none;
   outline: none;
@@ -295,7 +329,8 @@ function onKeydown(e) {
   color: var(--text-1);
 }
 .q::placeholder { color: var(--text-4); }
-.body { padding: var(--sp-5); overflow: auto; }
+.body { padding: var(--sp-5); overflow: auto; overflow-wrap: anywhere; }
+.result-group + .result-group { margin-top: var(--sp-6); }
 .hint-row { display: flex; align-items: center; gap: 7px; font-size: var(--fs-12); color: var(--text-4); margin-bottom: var(--sp-4); }
 .results {
   display: grid;
@@ -309,7 +344,7 @@ function onKeydown(e) {
 /* catalogue row — deliberately lighter than the library grid: these cards are
    not in the library yet, and the plus chip says clicking will add them. */
 .catalog { margin-top: var(--sp-6); padding-top: var(--sp-5); border-top: 1px solid var(--line-1); }
-.catalog-head { display: flex; align-items: center; gap: 10px; margin-bottom: var(--sp-4); }
+.catalog-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: var(--sp-4); }
 .catalog-label {
   display: inline-flex; align-items: center; gap: 7px;
   font-size: var(--fs-13); font-weight: 700; color: var(--text-1);
