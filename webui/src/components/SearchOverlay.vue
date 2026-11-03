@@ -2,6 +2,7 @@
 import { ref, watch, computed, nextTick, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
+import MediaRail from './MediaRail.vue'
 import PosterCard from './PosterCard.vue'
 import { api } from '../api.js'
 import { enrichSearchResults, searchSubtitle, searchTarget } from '../search.js'
@@ -18,6 +19,7 @@ const props = defineProps({
 const emit = defineEmits(['update:open'])
 
 const router = useRouter()
+const panel = ref(null)
 const q = ref('')
 const input = ref(null)
 const loading = ref(false)
@@ -173,19 +175,92 @@ const groups = computed(() => {
 const shown = computed(() => groups.value.flatMap((group) => group.items))
 const resultBadge = (item) => ({ season: '季', episode: '单集' }[item.type] || '')
 
+// A new query starts a new result set: send every rail and the panel back to
+// the top-left, or the user keeps looking at the old scroll offset. The rails
+// scroll smoothly, so the jump to 0 has to opt out of that.
+watch(groups, () => nextTick(() => {
+  const root = panel.value
+  if (!root) return
+  root.querySelector('.body')?.scrollTo({ top: 0 })
+  for (const track of root.querySelectorAll('.rail-track')) {
+    track.style.scrollBehavior = 'auto'
+    track.scrollLeft = 0
+    track.style.scrollBehavior = ''
+  }
+}))
+
 function go(item) {
   emit('update:open', false)
   router.push(searchTarget(item))
 }
 
+/** Cards in visual order — every group's two-row rail, catalogue excluded. */
+function cards() {
+  const root = panel.value
+  if (!root) return []
+  return [...root.querySelectorAll('.result-group .rail-track > .poster')]
+}
+
+/* Each rail scrolls sideways inside a panel that scrolls down, so an arrow key
+   may have to move two containers. Scrolling them by hand (instead of
+   scrollIntoView) keeps the page behind the mask from moving too. */
+function reveal(el) {
+  const pad = 8
+  for (let node = el.parentElement; node && node !== document.documentElement; node = node.parentElement) {
+    const r = el.getBoundingClientRect()
+    const c = node.getBoundingClientRect()
+    if (node.scrollWidth > node.clientWidth + 1) {
+      if (r.left < c.left + pad) node.scrollLeft -= c.left + pad - r.left
+      else if (r.right > c.right - pad) node.scrollLeft += r.right - (c.right - pad)
+    }
+    if (node.scrollHeight > node.clientHeight + 1) {
+      if (r.top < c.top + pad) node.scrollTop -= c.top + pad - r.top
+      else if (r.bottom > c.bottom - pad) node.scrollTop += r.bottom - (c.bottom - pad)
+    }
+  }
+}
+
+function focusCard(index) {
+  active.value = index
+  nextTick(() => {
+    const el = cards()[index]
+    if (el) reveal(el)
+  })
+}
+
+/* Directional rather than index arithmetic: groups hold different counts and
+   wrap into columns, so pick the nearest card in the pressed direction. */
+function move(dx, dy) {
+  const list = cards()
+  if (!list.length) return
+  const cur = list[active.value]
+  if (!cur) return focusCard(0)
+  const cr = cur.getBoundingClientRect()
+  const cx = cr.left + cr.width / 2
+  const cy = cr.top + cr.height / 2
+  let best = -1
+  let bestScore = Infinity
+  list.forEach((el, i) => {
+    if (i === active.value) return
+    const r = el.getBoundingClientRect()
+    const sx = r.left + r.width / 2 - cx
+    const sy = r.top + r.height / 2 - cy
+    const along = dx * sx + dy * sy
+    if (along <= 4) return // not in that direction
+    // weight the off-axis drift so arrows stay on their row / column
+    const score = along + (dx ? Math.abs(sy) : Math.abs(sx)) * 4
+    if (score < bestScore) { bestScore = score; best = i }
+  })
+  if (best >= 0) focusCard(best)
+}
+
 function onKeydown(e) {
   if (e.key === 'Escape') { emit('update:open', false); return }
   if (!shown.value.length) return
-  const cols = 6
-  if (e.key === 'ArrowRight') { e.preventDefault(); active.value = Math.min(shown.value.length - 1, active.value + 1) }
-  if (e.key === 'ArrowLeft') { e.preventDefault(); active.value = Math.max(0, active.value - 1) }
-  if (e.key === 'ArrowDown') { e.preventDefault(); active.value = Math.min(shown.value.length - 1, active.value + cols) }
-  if (e.key === 'ArrowUp') { e.preventDefault(); active.value = Math.max(0, active.value - cols) }
+  if (e.key === 'ArrowRight') { e.preventDefault(); move(1, 0) }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); move(-1, 0) }
+  if (e.key === 'ArrowDown') { e.preventDefault(); move(0, 1) }
+  if (e.key === 'ArrowUp') { e.preventDefault(); move(0, -1) }
   if (e.key === 'Enter') { e.preventDefault(); go(shown.value[active.value] || shown.value[0]) }
 }
 </script>
@@ -194,7 +269,7 @@ function onKeydown(e) {
   <Teleport to="body">
     <Transition name="fade">
       <div v-if="open" class="search-mask" @click.self="emit('update:open', false)">
-        <div class="search-panel" @keydown="onKeydown">
+        <div ref="panel" class="search-panel" @keydown="onKeydown">
           <div class="bar">
             <AppIcon name="search" :size="20" />
             <input
@@ -219,7 +294,7 @@ function onKeydown(e) {
 
             <section v-for="group in groups" :key="group.key" class="result-group">
               <div v-if="group.label" class="hint-row">{{ group.label }} · {{ group.items.length }}</div>
-              <div class="results stagger">
+              <MediaRail class="results-rail">
                 <PosterCard
                   v-for="(it, i) in group.items" :key="it.id" :item="it"
                   :to="searchTarget(it)"
@@ -229,7 +304,7 @@ function onKeydown(e) {
                   @mouseenter="active = shown.findIndex((item) => item.id === it.id)"
                   @click="emit('update:open', false)"
                 />
-              </div>
+              </MediaRail>
             </section>
 
             <!-- Catalogue results: on bilibili, not in any library. Clicking one
@@ -243,7 +318,7 @@ function onKeydown(e) {
               <div v-if="catalogWarning" class="cat-warn tiny">
                 <AppIcon name="alert" :size="12" /> {{ catalogWarning }}
               </div>
-              <div class="catalog-grid">
+              <MediaRail class="catalog-rail">
                 <button
                   v-for="(c, i) in catalog" :key="c.source_id + ':' + c.season_id"
                   class="catalog-card" :style="{ '--i': Math.min(i, 11) }"
@@ -263,7 +338,7 @@ function onKeydown(e) {
                     {{ [c.year, c.index_show || (c.episodes ? c.episodes + ' 集' : '')].filter(Boolean).join(' · ') || c.library_name }}
                   </span>
                 </button>
-              </div>
+              </MediaRail>
             </section>
 
             <div v-if="!q.trim() && !recents.length" class="none">
@@ -274,7 +349,7 @@ function onKeydown(e) {
           </div>
 
           <div class="foot tiny">
-            <span><kbd>↑</kbd><kbd>↓</kbd> 移动</span>
+            <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> 移动</span>
             <span><kbd>↵</kbd> 打开</span>
             <span><kbd>Esc</kbd> 关闭</span>
             <span class="spacer"></span>
@@ -300,11 +375,14 @@ function onKeydown(e) {
   padding: clamp(12px, 8vh, 96px) 16px 16px;
 }
 .search-panel {
+  /* one knob for the rail card width, and the panel colour the rails fade to */
+  --hit-w: 148px;
+  --panel-bg: rgba(13, 15, 20, 0.97);
   width: min(1180px, 100%);
   max-height: 100%;
   display: flex;
   flex-direction: column;
-  background: rgba(13, 15, 20, 0.97);
+  background: var(--panel-bg);
   border: 1px solid var(--line-2);
   border-radius: var(--r-l);
   box-shadow: var(--sh-4);
@@ -330,16 +408,49 @@ function onKeydown(e) {
 }
 .q::placeholder { color: var(--text-4); }
 .body { padding: var(--sp-5); overflow: auto; overflow-wrap: anywhere; }
-.result-group + .result-group { margin-top: var(--sp-6); }
+.result-group + .result-group { margin-top: var(--sp-5); }
 .hint-row { display: flex; align-items: center; gap: 7px; font-size: var(--fs-12); color: var(--text-4); margin-bottom: var(--sp-4); }
-.results {
+
+/* Every group is a two-row rail: cards fill downwards first, then the row
+   scrolls sideways. The panel itself keeps scrolling vertically, so a long
+   result list stays a short panel. */
+.results-rail :deep(.rail-track),
+.catalog-rail :deep(.rail-track) {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
-  gap: var(--sp-5) var(--sp-4);
+  grid-auto-flow: column;
+  grid-template-rows: repeat(2, auto);
+  align-items: start;
+  margin: 0;
+  padding: 8px 2px 10px;
+  gap: var(--sp-4);
+  scroll-padding-inline: 2px;
 }
-.results :deep(.poster) { width: 100%; }
-.results :deep(.poster.active) { transform: translateY(-4px); }
-.results :deep(.poster.active .art) { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand), var(--sh-3); }
+.results-rail :deep(.rail-track) { grid-auto-columns: var(--hit-w, 148px); }
+.catalog-rail :deep(.rail-track) {
+  grid-auto-columns: calc(var(--hit-w, 148px) * 0.86);
+  gap: var(--sp-4);
+}
+.results-rail :deep(.rail-track > .poster) { width: auto; }
+/* fade the rail's edges instead of hugging the panel border with the scrim */
+.results-rail :deep(.rail-arrow),
+.catalog-rail :deep(.rail-arrow) { top: 0; bottom: 0; width: 64px; }
+.results-rail :deep(.rail-arrow.left),
+.catalog-rail :deep(.rail-arrow.left) {
+  left: 0;
+  padding-left: 2px;
+  background: linear-gradient(90deg, var(--panel-bg) 32%, transparent);
+}
+.results-rail :deep(.rail-arrow.right),
+.catalog-rail :deep(.rail-arrow.right) {
+  right: 0;
+  padding-right: 2px;
+  background: linear-gradient(270deg, var(--panel-bg) 32%, transparent);
+}
+.results-rail :deep(.poster.active) { transform: translateY(-4px); }
+.results-rail :deep(.poster.active .art) {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand), var(--sh-3);
+}
 
 /* catalogue row — deliberately lighter than the library grid: these cards are
    not in the library yet, and the plus chip says clicking will add them. */
@@ -355,11 +466,6 @@ function onKeydown(e) {
   display: flex; align-items: center; gap: 6px;
   margin: -4px 0 var(--sp-4);
   color: #e5a04b;
-}
-.catalog-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 126px), 1fr));
-  gap: var(--sp-4) var(--sp-3);
 }
 .catalog-card {
   display: flex; flex-direction: column; gap: 5px;
@@ -426,8 +532,14 @@ kbd {
   font-family: var(--font-mono);
   font-size: 10px;
 }
+@media (max-width: 900px) {
+  .search-panel { --hit-w: 118px; }
+}
 @media (max-width: 720px) {
   .foot { display: none; }
   .body { padding: var(--sp-4); }
+  .search-panel { --hit-w: 104px; }
+  .results-rail :deep(.rail-track),
+  .catalog-rail :deep(.rail-track) { gap: var(--sp-4) var(--sp-3); }
 }
 </style>

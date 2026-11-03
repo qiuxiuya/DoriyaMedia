@@ -24,6 +24,7 @@ function scrollBy(dir) {
 }
 
 let ro = null
+let mo = null
 onMounted(async () => {
   await nextTick()
   measure()
@@ -32,10 +33,17 @@ onMounted(async () => {
     ro = new ResizeObserver(measure)
     ro.observe(track.value)
   }
+  // The track may be resized by content alone (results arriving in an overlay),
+  // which never fires a resize on the track's own box.
+  if (typeof MutationObserver !== 'undefined' && track.value) {
+    mo = new MutationObserver(measure)
+    mo.observe(track.value, { childList: true })
+  }
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', measure)
   ro?.disconnect()
+  mo?.disconnect()
 })
 </script>
 

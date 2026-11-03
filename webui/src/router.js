@@ -30,7 +30,12 @@ export const router = createRouter({
   routes,
   scrollBehavior(to, from, saved) {
     if (saved) return saved
-    if (to.path === from.path) return {}
+    // `false` is "do not scroll"; an empty object or `{ top: 0 }` would make the
+    // router call window.scrollTo — and every programmatic scroll starts by
+    // aborting the smooth scroll that is already running (CSSOM). A same-page
+    // navigation (stripping `?ep=`, changing a filter) must leave the page where
+    // it is, especially right after we scrolled to a search hit on purpose.
+    if (to.path === from.path) return false
     return { top: 0 }
   },
 })

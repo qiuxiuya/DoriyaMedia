@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, imgUrl, artIf, fmtSize } from '../api.js'
+import { scrollToEpisode } from '../episodeFocus.js'
 import AppIcon from '../components/AppIcon.vue'
 import BiliBadge from '../components/BiliBadge.vue'
 import SmartImage from '../components/SmartImage.vue'
@@ -15,6 +16,12 @@ const siblings = ref([])
 const error = ref('')
 const picked = ref({})
 const hovered = ref(0)
+// Episode a search hit asked us to point at (`?ep=<id>`); it pulses three times.
+const flagged = ref(0)
+const page = ref(null)
+let flagTimer = null
+let flagController = null
+let disposed = false
 
 const season = computed(() => data.value?.item)
 const episodes = computed(() => data.value?.episodes || [])
@@ -73,12 +80,58 @@ async function load() {
   } catch (e) {
     error.value = e.message
   }
+  await flagEpisode()
 }
+
+/* A search result can name one episode of this season. Bring it into view and
+   pulse it three times, so the eye lands on the right row of a 24-entry list. */
+function cancelFlag() {
+  flagController?.abort()
+  clearTimeout(flagTimer)
+  flagged.value = 0
+}
+
+async function flagEpisode() {
+  if (disposed) return
+  cancelFlag()
+  const id = Number(route.query.ep || 0)
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  const path = route.path
+  const controller = new AbortController()
+  flagController = controller
+  // Flush removal of the previous hit class, so clicking the same result again
+  // restarts all three pulses instead of continuing an old CSS animation.
+  await nextTick()
+  if (controller.signal.aborted) return
+  const el = page.value?.querySelector(`.ep[data-ep="${id}"]`)
+  if (!el) return // data may still be loading; load() retries the current query
+  const arrived = await scrollToEpisode(el, { signal: controller.signal })
+  if (controller.signal.aborted || route.path !== path || Number(route.query.ep) !== id) return
+  // Consume the request even when the scroll was cut short: it belonged to this
+  // visit, and a reload would only replay it. Preserve other query/hash values
+  // and never erase a newer search result while an old scroll settles.
+  const { ep, ...rest } = route.query
+  void router.replace({ path, query: rest, hash: route.hash })
+  // Pulse only once the row is really on screen — a ring that burns while the
+  // page is still travelling (or never gets there) is worse than no ring.
+  if (!arrived) return
+  flagged.value = id
+  flagTimer = setTimeout(() => { flagged.value = 0 }, 1500)
+}
+// Cross-season navigation remounts this page; same-season hits only change ep.
+watch(() => route.query.ep, (v) => {
+  if (v) flagEpisode()
+  else flagController?.abort() // consuming ep must not clear the visible highlight
+})
+onBeforeUnmount(() => {
+  disposed = true
+  cancelFlag()
+})
 onMounted(load)
 </script>
 
 <template>
-  <div class="season-page">
+  <div ref="page" class="season-page">
     <!-- ================= banner ================= -->
     <header class="banner">
       <div class="banner-art">
@@ -133,7 +186,8 @@ onMounted(load)
       <div v-if="episodes.length" class="eps stagger">
         <article
           v-for="(ep, i) in episodes" :key="ep.id"
-          class="ep" :class="{ hot: hovered === ep.id }"
+          class="ep" :class="{ hot: hovered === ep.id, hit: flagged === ep.id }"
+          :data-ep="ep.id"
           :style="{ '--i': Math.min(i, 11) }"
           @mouseenter="hovered = ep.id" @mouseleave="hovered = 0"
         >
@@ -238,6 +292,7 @@ onMounted(load)
 
 .eps { display: flex; flex-direction: column; gap: var(--sp-3); }
 .ep {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-4);
@@ -246,6 +301,28 @@ onMounted(load)
   border: 1px solid var(--line-1);
   background: var(--bg-1);
   transition: border-color var(--t-fast), background var(--t-fast), transform var(--t-fast);
+}
+/* The row a search hit pointed at: three quick pulses. They live on a pseudo
+   element so the row keeps its own entrance animation. */
+.ep.hit::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  border: 2px solid var(--brand);
+  background: rgba(240, 169, 46, 0.1);
+  box-shadow: 0 0 0 4px rgba(240, 169, 46, 0.16), 0 10px 40px rgba(240, 169, 46, 0.28);
+  /* forwards: the ring ends invisible instead of snapping back to solid */
+  animation: epHit 460ms var(--ease-out) 3 forwards;
+}
+@keyframes epHit {
+  0%, 100% { opacity: 0; }
+  42% { opacity: 1; }
+}
+/* no motion: a steady ring is the cue instead of a blink */
+@media (prefers-reduced-motion: reduce) {
+  .ep.hit::after { animation: none; opacity: 1; }
 }
 .ep:hover { border-color: var(--line-3); background: var(--bg-2); transform: translateX(3px); }
 .ep-no {

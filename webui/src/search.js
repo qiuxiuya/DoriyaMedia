@@ -1,7 +1,14 @@
 import { episodeLabel } from './api.js'
 
 export function searchTarget(item) {
-  return item.type === 'season' ? `/season/${item.id}` : `/item/${item.id}`
+  if (item.type === 'season') return `/season/${item.id}`
+  // An episode hit belongs to a season, and only the season page lists its
+  // neighbours: land there, pointed at that one episode (?ep=), so the result
+  // is "第 7 集 of that show" instead of an orphan episode page.
+  if (item.type === 'episode' && item.parent_id) {
+    return { path: `/season/${item.parent_id}`, query: { ep: String(item.id) } }
+  }
+  return `/item/${item.id}`
 }
 
 export function searchSubtitle(item) {
