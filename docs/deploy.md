@@ -7,6 +7,7 @@
 ```
 CGO_ENABLED=0 go build -ldflags "-s -w" -o doriyamedia ./cmd/doriyamedia
 ./doriyamedia                  # 默认监听 0.0.0.0:5666,数据目录 ./data
+./doriyamedia serve -listen 127.0.0.1    # 只允许本机访问(前面有反代时常用)
 ```
 
 **在 Windows 上一键构建**(顺带构建前端,需要 pnpm):
@@ -148,6 +149,7 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o doriyamedia-a
 | `DORIYAMEDIA_LOCAL=1` | 只监听 `127.0.0.1`,不对外暴露 |
 | `DORIYAMEDIA_CONFIG=PATH` | 指定配置文件路径(默认 `./config.json`) |
 | `DORIYAMEDIA_PORT=N` | 覆盖监听端口 |
+| `DORIYAMEDIA_LISTEN=ADDR` | 覆盖监听地址(如 `127.0.0.1`),等同 `serve -listen` |
 | `DORIYAMEDIA_GITHUB_BASE` / `DORIYAMEDIA_API_BASE` | 安装脚本与 `dm` 的下载源前缀 |
 
 ## 7. 数据目录里有什么
@@ -181,7 +183,39 @@ doriyamedia doctor                # 自检:ffmpeg、数据目录、数据库、�
 ```
 
 全局选项可以写在命令前,也可以写在命令后:`-config PATH`(或环境变量
-`DORIYAMEDIA_CONFIG`)、`-json`(机器可读输出)、`-quiet`、`-port`(仅 serve)。
+`DORIYAMEDIA_CONFIG`)、`-json`(机器可读输出)、`-quiet`、`-port` / `-listen`(仅 serve)。
+
+**监听地址**
+
+默认监听 `0.0.0.0`(所有网卡),这样手机、电视和同一局域网的其它机器才能连上。只想本机访问、
+或者前面已经有一层反向代理,就把它收窄:
+
+```
+doriyamedia serve -listen 127.0.0.1        # 只看本机
+doriyamedia serve -listen 192.168.1.10     # 只听内网这一张网卡
+doriyamedia -listen 127.0.0.1 serve        # 写在命令前也可以
+DORIYAMEDIA_LISTEN=127.0.0.1 doriyamedia serve   # 或用环境变量
+doriyamedia serve -port 8080 -listen 127.0.0.1   # 地址与端口可以一起改
+```
+
+`-host` 是 `-listen` 的别名。只写 IP(或 `localhost`),不要带 `http://` 和路径——端口有单独的
+`-port`,写 `127.0.0.1:8080` 里的端口会被忽略,免得两个地方同时决定一件事。主机名只有
+`localhost` 被接受:其它域名要靠 DNS 解析,换网络后可能悄悄绑到另一张网卡上。
+
+**监听地址不写进 `config.json`**:绑定哪张网卡取决于这次进程是怎么起的,不是安装属性。
+把它存盘就意味着某次 `-listen` 会悄悄影响之后的每一次重启——反代部署最怕这个。要让它在重启后
+依然生效,就把它写进启动方式里(systemd 的 `ExecStart`、Docker 的 `command`、shell 包装脚本),
+或者常驻设一个 `DORIYAMEDIA_LISTEN`。配置里只保留端口。
+
+看当前会绑到哪个地址(和 `serve` 用的是同一套判断:环境变量 → 默认值):
+
+```
+doriyamedia status          # 输出里的「监听地址」一行
+```
+
+`DORIYAMEDIA_LOCAL=1` 仍然有效,等价于本次运行 `-listen 127.0.0.1`,优先级最高。
+启动日志里打印的是可以直接点开的地址:`0.0.0.0` 会显示成 `127.0.0.1`,因为浏览器不接受前者。
+绑到所有网卡时日志会额外提醒一次防火墙。
 
 **存储源与媒体库**
 

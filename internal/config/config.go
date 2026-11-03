@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +14,11 @@ import (
 
 // DefaultTMDBProxy is the usual local SOCKS5 port (Clash/v2rayN default).
 const DefaultTMDBProxy = "socks5://127.0.0.1:7890"
+
+// DefaultListen is the address the server binds to when nothing else says
+// otherwise: every IPv4 interface, which is what an owner installing on a home
+// server expects (the phone has to reach it, not just the machine itself).
+const DefaultListen = "0.0.0.0"
 
 // Registration modes for self-service signup.
 const (
@@ -98,6 +104,65 @@ type Users struct {
 
 // MailEnabled reports whether outbound mail can actually be sent.
 func (c *Config) MailEnabled() bool { return strings.TrimSpace(c.SMTP.Host) != "" }
+
+// NormalizeListen turns a listen setting into the host part of a listen
+// address, and explains itself when it cannot.
+//
+// Accepted forms: "" (every interface), an IP literal ("127.0.0.1",
+// "192.168.1.10", "::"), a hostname ("localhost"), and any of those with a port
+// suffix ("127.0.0.1:5666"), whose port is dropped because the port has its own
+// setting and letting both exist would make two sources of truth.
+//
+// Names other than "localhost" are refused: net.Listen would resolve one, and a
+// DNS change or a multi-homed host would then silently move the server to a
+// different interface at the next restart. An owner who means "this machine"
+// can say 127.0.0.1; one who means "my LAN address" can say the address.
+func NormalizeListen(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	// A scheme or path is what someone pastes from a browser address bar.
+	if strings.Contains(s, "://") || strings.Contains(s, "/") {
+		return "", fmt.Errorf("监听地址不要带 http:// 或路径，只写 IP（例如 127.0.0.1）")
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	s = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+	switch s {
+	case "", "0.0.0.0":
+		return DefaultListen, nil
+	case "::", "0:0:0:0:0:0:0:0":
+		return "::", nil
+	case "localhost":
+		return "127.0.0.1", nil
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String(), nil
+	}
+	return "", fmt.Errorf("监听地址 %q 不是有效的 IP，只能写 IP（0.0.0.0 表示所有网卡）或 localhost", raw)
+}
+
+// ListenAddr is the value to hand net.Listen: the configured host and port.
+func (c *Config) ListenAddr() string {
+	host := c.Listen
+	if host == "" {
+		host = DefaultListen
+	}
+	return net.JoinHostPort(host, fmt.Sprint(c.Port))
+}
+
+// ListenIsLocal reports whether the server is bound to loopback only, which is
+// what decides whether a LAN address is worth printing at startup.
+func (c *Config) ListenIsLocal() bool {
+	host := c.Listen
+	if host == "" {
+		host = DefaultListen
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // EmailVerificationRequired reports whether a new signup has to prove it owns
 // its address. The mail server check matters: asking for a verification that
@@ -222,7 +287,16 @@ func ValidateEmbyIcon(icon string) error {
 }
 
 type Config struct {
-	Port            int       `json:"port"`
+	Port int `json:"port"`
+	// Listen is the host the HTTP server binds to for this run, without a port:
+	// an IP literal ("127.0.0.1", "192.168.1.10") or "" for every interface.
+	//
+	// It is deliberately NOT persisted (json:"-"): which interface to bind is a
+	// property of how the process is started — `serve -listen 127.0.0.1`, an env
+	// var, a systemd unit — not of the installation. A saved value would outlive
+	// the `-listen` that put it there and move the server at the next restart,
+	// which is the one failure a reverse-proxy setup cannot afford.
+	Listen          string    `json:"-"`
 	DataDir         string    `json:"data_dir"`
 	Secret          string    `json:"secret"`
 	FFmpeg          string    `json:"ffmpeg"`
@@ -283,6 +357,7 @@ func (c *Config) RegistrationAllowed() bool {
 func Defaults() *Config {
 	return &Config{
 		Port:    5666,
+		Listen:  DefaultListen,
 		DataDir: "data",
 		Secret:  randomSecret(),
 		FFmpeg:  "ffmpeg",
@@ -352,8 +427,11 @@ func Load(path string) (*Config, error) {
 func (c *Config) normalize() {
 	c.Emby.Name = c.Emby.ServerName()
 	c.Emby.Icon = strings.TrimSpace(c.Emby.Icon)
-	if c.Port <= 0 {
+	if c.Port <= 0 || c.Port > 65535 {
 		c.Port = 5666
+	}
+	if c.Listen == "" {
+		c.Listen = DefaultListen
 	}
 	if c.DataDir == "" {
 		c.DataDir = "data"

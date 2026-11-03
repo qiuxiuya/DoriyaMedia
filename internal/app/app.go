@@ -6,6 +6,7 @@ package app
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 
@@ -22,14 +23,22 @@ import (
 )
 
 // Serve loads the configuration and blocks serving HTTP until the process is
-// stopped. port overrides cfg.Port when greater than zero.
-func Serve(cfgPath string, version string, port int) error {
+// stopped. A listen address or port argument overrides the config file when it
+// is not empty / greater than zero.
+func Serve(cfgPath string, version string, listen string, port int) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	if port > 0 {
 		cfg.Port = port
+	}
+	if listen != "" {
+		host, err := config.NormalizeListen(listen)
+		if err != nil {
+			return err
+		}
+		cfg.Listen = host
 	}
 	if err := os.MkdirAll(cfg.ImagesDir(), 0o755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -96,14 +105,38 @@ func Serve(cfgPath string, version string, port int) error {
 	srv.Site = siteStore
 	srv.BangumiSync.Start()
 
-	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
+	// DORIYAMEDIA_LOCAL is the older way to say "loopback only". It still wins
+	// over the config file, because whoever set it did so on this run's
+	// environment and meant it — but it is no longer the only way, so a
+	// `listen` setting is what a config-file deployment uses.
 	if os.Getenv("DORIYAMEDIA_LOCAL") == "1" {
-		addr = fmt.Sprintf("127.0.0.1:%d", cfg.Port) // 仅本机访问
+		cfg.Listen = "127.0.0.1"
 	}
+	addr := cfg.ListenAddr()
 	log.Printf("===========================================")
-	log.Printf("  DoriyaMedia %s  →  http://%s", version, addr)
+	log.Printf("  DoriyaMedia %s  →  http://%s", version, displayAddr(addr))
+	if !cfg.ListenIsLocal() {
+		log.Printf("  监听所有网卡时，请确认防火墙只放行你需要的网段；只想本机访问就用 -listen 127.0.0.1 启动")
+	}
 	log.Printf("  首次使用请先打开网页完成管理员初始化")
 	log.Printf("===========================================")
 	httpServer := &http.Server{Addr: addr, Handler: srv.Handler()}
 	return httpServer.ListenAndServe()
+}
+
+// displayAddr rewrites a wildcard bind address into one the owner can actually
+// type: "0.0.0.0" and "::" are instructions to the kernel, not addresses a
+// browser accepts, and printing them leaves the reader with a URL that fails.
+func displayAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return addr
 }

@@ -13,6 +13,12 @@ import (
 func runServe(a *App, args []string) error {
 	fs := newFlagSet(a, "serve")
 	port := fs.Int("port", 0, "覆盖监听端口")
+	// listen is the host, not the address: the port already has its own flag,
+	// and accepting "1.2.3.4:8080" here would give two ways to set one thing.
+	// It reaches the app through the environment so a global -listen (written
+	// before the subcommand) lands in the same place as a subcommand one.
+	listen := fs.String("listen", "", "监听地址：0.0.0.0（默认，所有网卡）或 127.0.0.1 等")
+	host := fs.String("host", "", "-listen 的别名")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -22,8 +28,17 @@ func runServe(a *App, args []string) error {
 			*port = v
 		}
 	}
+	if *listen == "" {
+		*listen = *host
+	}
+	if *listen == "" {
+		// Same hand-off for a global -listen.
+		if v := os.Getenv("DORIYAMEDIA_LISTEN"); v != "" {
+			*listen = v
+		}
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("多余的参数: %v", fs.Args())
 	}
-	return app.Serve(a.ConfigPath, a.Version, *port)
+	return app.Serve(a.ConfigPath, a.Version, *listen, *port)
 }

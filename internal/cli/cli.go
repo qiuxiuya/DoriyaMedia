@@ -49,7 +49,7 @@ var commands []command
 
 func init() {
 	commands = []command{
-		{"serve", "启动 HTTP 服务（默认命令）", "serve [-port N]", runServe},
+		{"serve", "启动 HTTP 服务（默认命令）", "serve [-port N] [-listen ADDR]", runServe},
 		{"version", "打印版本", "version", runVersion},
 		{"status", "概览：配置、数据库、媒体库与账号数量", "status [--json]", runStatus},
 		{"doctor", "自检：ffmpeg/ffprobe、数据目录、数据库、代理", "doctor [--proxy URL] [--json]", runDoctor},
@@ -134,6 +134,8 @@ func parseGlobal(app *App, args []string) ([]string, error) {
 	fs.BoolVar(&app.JSON, "json", app.JSON, "以 JSON 输出")
 	fs.BoolVar(&app.Quiet, "quiet", app.Quiet, "减少输出")
 	port := fs.Int("port", 0, "覆盖监听端口")
+	listen := fs.String("listen", "", "覆盖监听地址（仅 serve）")
+	fs.StringVar(listen, "host", "", "-listen 的别名")
 	showVersion := fs.Bool("version", false, "打印版本")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -143,9 +145,14 @@ func parseGlobal(app *App, args []string) ([]string, error) {
 		os.Exit(0)
 	}
 	// A port override only matters to serve; hand it on through the environment
-	// so `doriyamedia -port 8080` keeps working without a second parser.
+	// so `doriyamedia -port 8080` keeps working without a second parser. The
+	// listen address travels the same way, so the two positions — before and
+	// after the subcommand — are one code path.
 	if *port > 0 {
 		os.Setenv("DORIYAMEDIA_PORT", fmt.Sprint(*port))
+	}
+	if *listen != "" {
+		os.Setenv("DORIYAMEDIA_LISTEN", *listen)
 	}
 	return fs.Args(), nil
 }
@@ -219,6 +226,7 @@ func printHelp(a *App, w io.Writer, topic string) {
 	fmt.Fprintf(w, "  -json          以 JSON 输出\n")
 	fmt.Fprintf(w, "  -quiet         减少输出\n")
 	fmt.Fprintf(w, "  -port N        覆盖监听端口（仅 serve）\n")
+	fmt.Fprintf(w, "  -listen ADDR   覆盖监听地址（仅 serve，默认 0.0.0.0；127.0.0.1 只本机）\n")
 	fmt.Fprintf(w, "  -version       打印版本\n\n")
 	fmt.Fprintf(w, "命令:\n")
 	for _, c := range commands {

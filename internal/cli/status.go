@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"doriyamedia/internal/config"
 	"doriyamedia/internal/db"
 	"doriyamedia/internal/netproxy"
 )
@@ -18,6 +19,7 @@ type statusReport struct {
 	Version      string   `json:"version"`
 	ConfigPath   string   `json:"config_path"`
 	Port         int      `json:"port"`
+	Listen       string   `json:"listen"`
 	DataDir      string   `json:"data_dir"`
 	DBPath       string   `json:"db_path"`
 	DBSize       int64    `json:"db_size"`
@@ -56,10 +58,22 @@ func runStatus(a *App, args []string) error {
 	}
 	defer store.DB.Close()
 
+	// The listen address is not in the file (see config.Config.Listen), so the
+	// report has to take it from where the server would: the environment first,
+	// then the default.
+	if v := strings.TrimSpace(os.Getenv("DORIYAMEDIA_LISTEN")); v != "" {
+		if host, err := config.NormalizeListen(v); err == nil {
+			cfg.Listen = host
+		}
+	}
+	if os.Getenv("DORIYAMEDIA_LOCAL") == "1" {
+		cfg.Listen = "127.0.0.1"
+	}
 	rep := statusReport{
 		Version:      a.Version,
 		ConfigPath:   a.ConfigPath,
 		Port:         cfg.Port,
+		Listen:       cfg.Listen,
 		DataDir:      cfg.Abs(),
 		DBPath:       cfg.DBPath(),
 		DBSize:       fileSize(cfg.DBPath()),
@@ -85,7 +99,7 @@ func runStatus(a *App, args []string) error {
 		fmt.Fprintf(a.Out, "  配置       %s\n", rep.ConfigPath)
 		fmt.Fprintf(a.Out, "  数据目录   %s\n", rep.DataDir)
 		fmt.Fprintf(a.Out, "  数据库     %s (%s)\n", rep.DBPath, humanSize(rep.DBSize))
-		fmt.Fprintf(a.Out, "  监听端口   %d\n", rep.Port)
+		fmt.Fprintf(a.Out, "  监听地址   %s\n", cfg.ListenAddr())
 		fmt.Fprintf(a.Out, "\n  存储源 %d    媒体库 %d    条目 %d    文件 %d\n",
 			rep.Sources, rep.Libraries, rep.Items, rep.Files)
 		fmt.Fprintf(a.Out, "  账号 %d（可用管理员 %d）\n", rep.Users, rep.Admins)
