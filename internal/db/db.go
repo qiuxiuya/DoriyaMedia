@@ -1745,6 +1745,44 @@ func (s *Store) FilesByItem(itemID int64) ([]models.MediaFile, error) {
 	return out, rows.Err()
 }
 
+// FileState is what a stored file row remembers about the file on the source:
+// enough to tell "the same file, untouched" from "a new or replaced one".
+type FileState struct {
+	FileID int64
+	ItemID int64
+	Size   int64
+	MTime  int64
+}
+
+// FileStates indexes every stored file of a library by source and path.
+//
+// A rescan walks the whole source again, but almost every file it meets is one
+// it organized last time. Writing those rows again costs two round-trips each
+// and changes nothing. Comparing them against this index is what lets the
+// organizer skip that work, so a second scan only writes what actually moved,
+// grew, or was replaced. The key is the one the scanner itself uses for a file
+// ("<sourceID>|<path>"), so a lookup is a map hit.
+func (s *Store) FileStates(libraryID int64) (map[string]FileState, error) {
+	rows, err := s.DB.Query(`SELECT f.id, f.item_id, f.source_id, f.path, f.size, f.mtime
+		FROM files f JOIN items i ON i.id = f.item_id
+		WHERE i.library_id = ?`, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]FileState{}
+	for rows.Next() {
+		var sourceID int64
+		var path string
+		var st FileState
+		if err := rows.Scan(&st.FileID, &st.ItemID, &sourceID, &path, &st.Size, &st.MTime); err != nil {
+			return nil, err
+		}
+		out[fmt.Sprintf("%d|%s", sourceID, path)] = st
+	}
+	return out, rows.Err()
+}
+
 // FileShowIndex maps every episode file of a library to the show it currently
 // belongs to, keyed by source and path. A scan uses it to recognise a file it
 // has already organized: a show's name can be overwritten by a metadata

@@ -598,15 +598,21 @@ func (sc *Scanner) organize(lib *models.Library, files []fileRec, prog *models.S
 		excludeMatcher(EffectiveExcludes(lib, sc.Cfg)),
 		excludeMatcher(EffectiveExcludeFolders(lib, sc.Cfg)))
 
+	// What each file row already records. The walk has just listed every file
+	// the source holds; the ones that are stored with the same size and mtime
+	// and belong to the item they would be bound to are not written again. This
+	// is what makes a rescan of an unchanged library cheap.
+	states := sc.fileStates(lib)
+
 	// Issues travel back with the organize pass so the scan can persist them
 	// beside its other results: a file the library's type cannot take would
 	// otherwise vanish without a trace.
 	switch lib.Type {
 	case "series":
-		issues, err := sc.organizeSeries(lib, files, prog, current, walked, partial, listings, scopes...)
+		issues, err := sc.organizeSeries(lib, files, prog, current, walked, partial, listings, states, scopes...)
 		return issues, sc.finishOrganize(lib, err)
 	default:
-		issues, err := sc.organizeMovies(lib, files, prog, current, walked, partial, listings, scopes...)
+		issues, err := sc.organizeMovies(lib, files, prog, current, walked, partial, listings, states, scopes...)
 		return issues, sc.finishOrganize(lib, err)
 	}
 }
@@ -624,7 +630,7 @@ func (sc *Scanner) finishOrganize(lib *models.Library, err error) error {
 	return err
 }
 
-func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) ([]models.ScanIssue, error) {
+func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, states map[string]db.FileState, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	existing, _, err := sc.Store.ItemsByLibrary(lib.ID, "movie", "", "", false, 0, 1000000)
 	if err != nil {
 		log.Printf("organize: load movies failed: %v", err)
@@ -696,6 +702,9 @@ func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *mo
 			byKey[key] = it.ID
 		}
 		for _, fr := range g.Files {
+			if unchangedFile(states, fr, itemID) {
+				continue
+			}
 			if _, err := sc.Store.UpsertFile(&models.MediaFile{
 				ItemID: itemID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
 			}); err != nil {
@@ -880,7 +889,7 @@ func planShow(childCount map[string]int, libPath, dir, filePath string, parsedSe
 	}
 }
 
-func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) ([]models.ScanIssue, error) {
+func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, states map[string]db.FileState, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	idx := &seriesIndex{
 		shows:       map[string]int64{},
 		seasons:     map[string]int64{},
@@ -1202,11 +1211,13 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			}
 		}
 
-		if _, err := sc.Store.UpsertFile(&models.MediaFile{
-			ItemID: epID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
-		}); err != nil {
-			log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)
-			return nil, err
+		if !unchangedFile(states, fr, epID) {
+			if _, err := sc.Store.UpsertFile(&models.MediaFile{
+				ItemID: epID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
+			}); err != nil {
+				log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)
+				return nil, err
+			}
 		}
 		prog.Update(func(st *models.ScanState) {
 			st.Done++
@@ -1453,6 +1464,41 @@ func fileGoneFromListings(srcID int64, path string, listings map[string][]source
 func fileSourceKey(sourceID int64, path string) string {
 	return fmt.Sprintf("%d|%s", sourceID, path)
 }
+
+// fileStates loads what the library already stored about each of its files, so
+// the organizer can tell a file it has seen before and left alone from one it
+// has to write. A failure here is not fatal: without the index every file is
+// treated as changed, which is the behaviour before this existed.
+func (sc *Scanner) fileStates(lib *models.Library) map[string]db.FileState {
+	states, err := sc.Store.FileStates(lib.ID)
+	if err != nil {
+		log.Printf("scan: read file states for library %d failed: %v", lib.ID, err)
+		return nil
+	}
+	return states
+}
+
+// unchangedFile reports whether the walk met exactly the file already stored
+// under the item it would be bound to. Two round-trips per file (the upsert and
+// the id read-back) exist to record that nothing changed, so a rescan of a
+// large library spends most of its database time writing rows that are already
+// right.
+//
+// A size or mtime the source did not report (zero) proves nothing and is never
+// compared. A .strm row is keyed by the URL it points at rather than by the
+// path it was found under, so its key never matches the walk's and it is always
+// written — its target may have changed without the file changing.
+func unchangedFile(states map[string]db.FileState, fr fileRec, itemID int64) bool {
+	if fr.Strm || fr.Size <= 0 || fr.MTime <= 0 {
+		return false
+	}
+	st, ok := states[fileSourceKey(fr.SourceID, fr.Path)]
+	if !ok {
+		return false
+	}
+	return st.ItemID == itemID && st.Size == fr.Size && st.MTime == fr.MTime
+}
+
 func groupKey(p Parsed) string {
 	return NormalizeKey(fmt.Sprintf("%s|%d", p.Title, p.Year))
 }

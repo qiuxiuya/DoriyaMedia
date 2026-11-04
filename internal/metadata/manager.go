@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -27,6 +28,12 @@ type Manager struct {
 
 	listMu    sync.Mutex
 	listCache map[string][]source.Entry // per-EnrichLibrary-run dir listing cache
+	// listFetch holds one in-flight List per key. Identify now runs on several
+	// goroutines, and hundreds of episodes share a few directories: without
+	// this, every worker that misses the cache at the same moment would issue
+	// its own identical request, which reads like a burst to the source and is
+	// the one thing OpenList and WebDAV throttling punishes.
+	listFetch map[string]*listCall
 	// One driver per source. A library may scan several sources, so a file's
 	// driver is looked up from the file, not from the library.
 	drvMu   sync.Mutex
@@ -34,6 +41,17 @@ type Manager struct {
 
 	bgmMu       sync.Mutex
 	bgmEpsCache map[int][]BgmEpisodeMeta
+	// bgmFetch holds one in-flight episode-list request per subject, so the
+	// seasons of one show entering the identify pass together share a single
+	// answer instead of asking Bangumi once each.
+	bgmFetch map[int]*bgmEpisodesCall
+}
+
+// bgmEpisodesCall is one in-flight episode-list request others wait on.
+type bgmEpisodesCall struct {
+	done chan struct{}
+	eps  []BgmEpisodeMeta
+	err  error
 }
 
 func NewManager(store *db.Store, cfg *config.Config) *Manager {
@@ -84,9 +102,22 @@ func (m *Manager) metadataDriver(ctx context.Context, fallback source.Driver, so
 	return fallback
 }
 
+// listCall is one in-flight listing that other goroutines wait on instead of
+// asking for the same directory again.
+type listCall struct {
+	done chan struct{}
+	ents []source.Entry
+	err  error
+}
+
 // cachedList returns the directory listing, deduplicating repeated lookups
 // within one enrichment run (hundreds of episodes often share a few dirs —
 // each remote List costs a public round-trip).
+//
+// It is safe to call from the identify pass's workers. A miss is fetched with
+// listMu released — a listing is a network round-trip, and holding the lock
+// across it would serialise every directory behind one slow response — while
+// concurrent callers for the same directory wait on the single in-flight call.
 func (m *Manager) cachedList(ctx context.Context, drv source.Driver, sourceID int64, dir string) ([]source.Entry, error) {
 	if scope, scoped := ctx.Value(metadataScopeKey{}).(metadataScope); scoped {
 		if drv == nil || sourceID != scope.sourceID || !scope.contains(dir) {
@@ -98,22 +129,45 @@ func (m *Manager) cachedList(ctx context.Context, drv source.Driver, sourceID in
 	// and artwork looked for in a place the file is not.
 	key := fmt.Sprintf("%d|%s", sourceID, dir)
 	m.listMu.Lock()
-	defer m.listMu.Unlock()
-	if m.listCache == nil {
-		m.listCache = map[string][]source.Entry{}
-	}
 	if ents, ok := m.listCache[key]; ok {
+		m.listMu.Unlock()
 		return ents, nil
 	}
+	if call, ok := m.listFetch[key]; ok {
+		// Someone is already fetching this directory. Wait for their answer
+		// rather than making a second identical request.
+		m.listMu.Unlock()
+		select {
+		case <-call.done:
+			return call.ents, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if drv == nil {
+		m.listMu.Unlock()
 		return nil, fmt.Errorf("没有可用的存储源驱动(source %d)", sourceID)
 	}
-	ents, err := drv.List(ctx, dir)
-	if err != nil {
-		return nil, err
+	if m.listFetch == nil {
+		m.listFetch = map[string]*listCall{}
 	}
-	m.listCache[key] = ents
-	return ents, nil
+	call := &listCall{done: make(chan struct{})}
+	m.listFetch[key] = call
+	// The listing is fetched with the lock released: it is a network round-trip,
+	// and holding listMu across it would put every other directory behind it.
+	m.listMu.Unlock()
+
+	ents, err := drv.List(ctx, dir)
+
+	m.listMu.Lock()
+	if err == nil && m.listCache != nil {
+		m.listCache[key] = ents
+	}
+	delete(m.listFetch, key)
+	call.ents, call.err = ents, err
+	close(call.done)
+	m.listMu.Unlock()
+	return ents, err
 }
 
 // driverFor returns the driver of the source a file lives on. A library may scan
@@ -194,6 +248,12 @@ func (m *Manager) BangumiEpisodes(ctx context.Context, subjectID int) ([]BgmEpis
 
 // bgmEpisodes caches one subject's episode list for the duration of an
 // enrichment run — otherwise every episode of a show refetches it.
+//
+// The identify pass runs a show's seasons in parallel, so several goroutines can
+// ask for the same subject at the same moment. The in-flight map makes the
+// second through the door wait for the first one's answer instead of spending
+// another request on it: api.bgm.tv answers a burst of identical calls with 429s
+// that cost every episode of that show its title and air date.
 func (m *Manager) bgmEpisodes(ctx context.Context, subjectID int) ([]BgmEpisodeMeta, error) {
 	m.bgmMu.Lock()
 	if m.bgmEpsCache == nil {
@@ -203,8 +263,30 @@ func (m *Manager) bgmEpisodes(ctx context.Context, subjectID int) ([]BgmEpisodeM
 		m.bgmMu.Unlock()
 		return eps, nil
 	}
+	if call, ok := m.bgmFetch[subjectID]; ok {
+		m.bgmMu.Unlock()
+		select {
+		case <-call.done:
+			return call.eps, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if m.bgmFetch == nil {
+		m.bgmFetch = map[int]*bgmEpisodesCall{}
+	}
+	call := &bgmEpisodesCall{done: make(chan struct{})}
+	m.bgmFetch[subjectID] = call
 	m.bgmMu.Unlock()
-	return m.RefreshBangumiEpisodes(ctx, subjectID)
+
+	eps, err := m.RefreshBangumiEpisodes(ctx, subjectID)
+
+	m.bgmMu.Lock()
+	delete(m.bgmFetch, subjectID)
+	call.eps, call.err = eps, err
+	close(call.done)
+	m.bgmMu.Unlock()
+	return eps, err
 }
 
 // RefreshBangumiEpisodes bypasses the in-process cache. An airing show gains
@@ -216,6 +298,11 @@ func (m *Manager) RefreshBangumiEpisodes(ctx context.Context, subjectID int) ([]
 		return nil, err
 	}
 	m.bgmMu.Lock()
+	// An entry point may reach this without bgmEpisodes having run first
+	// (watch-progress sync does), and writing to a nil map panics.
+	if m.bgmEpsCache == nil {
+		m.bgmEpsCache = map[int][]BgmEpisodeMeta{}
+	}
 	m.bgmEpsCache[subjectID] = eps
 	m.bgmMu.Unlock()
 	return eps, nil
@@ -253,18 +340,133 @@ func providerEnabled(lib *models.Library, name string) bool {
 
 // ---------- rate limit ----------
 
+// pacer spaces the calls made to one host. It is deliberately per provider: a
+// single shared clock made every Bangumi search wait behind a TMDB request it
+// had nothing to do with, so the identify pass ran at the pace of its slowest
+// provider for every call any of them made.
+//
+// The lock is held across the sleep, which is what serialises callers of the
+// same provider — the servers being protected care about the rate, not about
+// how many goroutines ask. Different providers use different pacers, so a slow
+// one never stalls a fast one.
+type pacer struct {
+	mu   sync.Mutex
+	last time.Time
+	gap  time.Duration
+}
+
+func (p *pacer) wait() {
+	if p == nil || p.gap <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d := p.gap - time.Since(p.last); d > 0 {
+		time.Sleep(d)
+	}
+	p.last = time.Now()
+}
+
 var (
-	rateMu   sync.Mutex
-	lastCall time.Time
+	// tmdbPacer keeps TMDB traffic at roughly 20 requests a second. TMDB's own
+	// limit is far higher, and image downloads are not paced here (they do not
+	// go through this path); the point is to be a polite, steady client.
+	tmdbPacer = &pacer{gap: 50 * time.Millisecond}
+	// bgmPacer is the slower one on purpose: api.bgm.tv rate-limits aggressively
+	// and answers 429s that cost a whole item its metadata.
+	bgmPacer = &pacer{gap: 350 * time.Millisecond}
 )
 
-func throttle() {
-	rateMu.Lock()
-	defer rateMu.Unlock()
-	if d := time.Since(lastCall); d < 200*time.Millisecond {
-		time.Sleep(200*time.Millisecond - d)
+// throttle waits for the named provider's turn. Local sidecars (nfo, artwork
+// beside the file) never reach it: they cost a filesystem read, not a request
+// to someone else's server.
+func throttle(provider string) {
+	switch provider {
+	case "tmdb":
+		tmdbPacer.wait()
+	case "bgm":
+		bgmPacer.wait()
 	}
-	lastCall = time.Now()
+}
+
+// ---------- concurrency ----------
+
+// identifyWorkers is how many items the identify pass handles at once.
+//
+// The per-provider pacers already serialise the requests that matter, so what
+// this adds is overlap between different providers and between waiting and
+// working: while one goroutine sleeps on Bangumi's pacer, another is writing a
+// downloaded poster or reading an nfo beside a file, and neither is idle for
+// the other's latency. It is bounded because each worker holds a database
+// connection (the pool has four) and, for a series library, an episode list.
+func (m *Manager) identifyWorkers() int {
+	n := 6
+	if m.Cfg != nil && m.Cfg.ScanConcurrency > 0 {
+		// The scan's own concurrency is the one knob an operator already tunes;
+		// scraping is network-bound, so it can afford more lanes than a walk.
+		n = m.Cfg.ScanConcurrency * 2
+	}
+	if n < 2 {
+		n = 2
+	}
+	// The database pool is four connections. More workers than that would spend
+	// their time queued on a connection instead of on the network, so the
+	// ceiling is where the pool stops being the bottleneck.
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
+// forEach runs fn for every index below n on a fixed pool of workers, and
+// returns the first error. It stops handing out work once ctx is done, so a
+// cancelled or timed-out scan leaves promptly instead of finishing the list.
+//
+// fn is called concurrently and must be safe to run that way. The progress
+// reporting it uses already is: ScanProgress guards its own state, and the
+// report closure only calls into it.
+func forEach(ctx context.Context, n, workers int, fn func(i int) error) error {
+	if n <= 0 {
+		return nil
+	}
+	if workers <= 0 {
+		workers = 1
+	}
+	var (
+		mu       sync.Mutex
+		firstErr error
+	)
+	setErr := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				if err := fn(i); err != nil {
+					setErr(err)
+				}
+			}
+		}()
+	}
+	for i := 0; i < n && ctx.Err() == nil; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	return firstErr
 }
 
 // ---------- public API ----------
@@ -306,7 +508,7 @@ func (m *Manager) EnrichLibrary(lib *models.Library, report func(done, total int
 	if err != nil {
 		return
 	}
-	defer func() { m.listMu.Lock(); m.listCache = nil; m.listMu.Unlock() }()
+	defer func() { m.listMu.Lock(); m.listCache, m.listFetch = nil, nil; m.listMu.Unlock() }()
 
 	switch lib.Type {
 	case "series":
@@ -323,7 +525,7 @@ func (m *Manager) EnrichFiles(lib *models.Library, files []models.MediaFile, rep
 	m.drvMu.Lock()
 	m.drivers = nil
 	m.drvMu.Unlock()
-	defer func() { m.listMu.Lock(); m.listCache = nil; m.listMu.Unlock() }()
+	defer func() { m.listMu.Lock(); m.listCache, m.listFetch = nil, nil; m.listMu.Unlock() }()
 	if lib == nil || len(files) == 0 {
 		return
 	}
@@ -421,26 +623,38 @@ func (m *Manager) EnrichFiles(lib *models.Library, files []models.MediaFile, rep
 		}
 		return context.WithValue(ctx, metadataScopeKey{}, scope), drv
 	}
-	total, done := len(shows)+len(targets), 0
+	total := len(shows) + len(targets)
+	var done atomic.Int64
 	say := func(msg string) {
 		if report != nil {
-			report(done, total, msg)
+			report(int(done.Load()), total, msg)
 		}
 	}
-	for _, t := range shows {
+	workers := m.identifyWorkers()
+	// Shows first, and to completion: an episode reads its show's TMDB and
+	// Bangumi ids, and enrichShow is what writes them. Running the two together
+	// would have an episode decide "the show has no TMDB id" while the show was
+	// about to be given one, which is exactly the value that decides whether the
+	// episode can be scraped at all.
+	_ = forEach(ctx, len(shows), workers, func(i int) error {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
+		t := &shows[i]
 		say("识别剧集 " + t.item.Name)
 		itemCtx, drv := scoped(t.file)
 		m.enrichShow(itemCtx, drv, lib, t.item, t.file)
-		done++
-		say("识别剧集 " + t.item.Name)
+		done.Add(1)
+		return nil
+	})
+	if ctx.Err() != nil {
+		return
 	}
-	for _, t := range targets {
+	_ = forEach(ctx, len(targets), workers, func(i int) error {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
+		t := &targets[i]
 		say("识别 " + t.item.Name)
 		itemCtx, drv := scoped(t.file)
 		if t.item.Type == "movie" {
@@ -448,9 +662,9 @@ func (m *Manager) EnrichFiles(lib *models.Library, files []models.MediaFile, rep
 		} else {
 			m.enrichEpisode(itemCtx, drv, lib, t.item, t.show, t.season, t.file)
 		}
-		done++
-		say("识别 " + t.item.Name)
-	}
+		done.Add(1)
+		return nil
+	})
 	say("识别完成")
 }
 
@@ -459,16 +673,20 @@ func (m *Manager) enrichMovies(ctx context.Context, drv source.Driver, lib *mode
 	if err != nil {
 		return
 	}
-	for i := range items {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+	total := len(items)
+	// Each worker owns the item it was handed, so no two goroutines write the
+	// same row. done is shared, hence the counter: progress must advance
+	// monotonically even though the items finish out of order.
+	var done atomic.Int64
+	_ = forEach(ctx, total, m.identifyWorkers(), func(i int) error {
+		if ctx.Err() != nil {
+			return nil
 		}
-		say(i, len(items), "识别 "+items[i].Name)
+		say(int(done.Add(1))-1, total, "识别 "+items[i].Name)
 		m.enrichMovie(ctx, drv, lib, &items[i])
-		say(i+1, len(items), "识别 "+items[i].Name)
-	}
+		return nil
+	})
+	say(total, total, "识别完成")
 }
 
 func (m *Manager) enrichSeries(ctx context.Context, drv source.Driver, lib *models.Library, say func(done, total int, msg string)) {
@@ -488,18 +706,35 @@ func (m *Manager) enrichSeries(ctx context.Context, drv source.Driver, lib *mode
 		epTotal = len(all)
 	}
 	total := len(shows) + epTotal
-	done := 0
-	for i := range shows {
-		say(done, total, "识别剧集 "+shows[i].Name)
+	// done advances as items are finished, from however many workers; the feed
+	// must never appear to go backwards, so it is a counter rather than a loop
+	// index.
+	var done atomic.Int64
+	workers := m.identifyWorkers()
+	_ = forEach(ctx, len(shows), workers, func(i int) error {
+		if ctx.Err() != nil {
+			return nil
+		}
+		say(int(done.Add(1))-1, total, "识别剧集 "+shows[i].Name)
 		m.enrichShow(ctx, drv, lib, &shows[i])
-		done++
-		say(done, total, "识别剧集 "+shows[i].Name)
-	}
-	// episodes after shows are identified
+		return nil
+	})
+	// Episodes are identified only after the shows are, because an episode
+	// inherits its show's TMDB id and Bangumi subject. Seasons are independent
+	// of each other, so they run as one pool in which each unit is a season:
+	// spawning a goroutine per episode instead would let a whole franchise's
+	// episodes compete for the same handful of pacer slots with no bound on
+	// how many episode lists are held open at once.
 	showByID := map[int64]models.Item{}
 	for _, s := range shows {
 		showByID[s.ID] = s
 	}
+	type seasonWork struct {
+		season models.Item
+		show   models.Item
+		kids   []models.Item
+	}
+	var work []seasonWork
 	for _, s := range seasons {
 		if s.ParentID == nil {
 			continue
@@ -509,14 +744,26 @@ func (m *Manager) enrichSeries(ctx context.Context, drv source.Driver, lib *mode
 			continue
 		}
 		kids, _ := m.Store.ItemChildren(s.ID)
-		for i := range kids {
-			if done%25 == 0 {
-				say(done, total, "识别剧集 "+show.Name)
-			}
-			m.enrichEpisode(ctx, drv, lib, &kids[i], &show, &s)
-			done++
+		if len(kids) == 0 {
+			continue
 		}
+		work = append(work, seasonWork{season: s, show: show, kids: kids})
 	}
+	_ = forEach(ctx, len(work), workers, func(i int) error {
+		w := &work[i]
+		if ctx.Err() != nil {
+			return nil
+		}
+		for k := range w.kids {
+			if ctx.Err() != nil {
+				return nil
+			}
+			season, show := w.season, w.show
+			say(int(done.Add(1)), total, "识别剧集 "+show.Name)
+			m.enrichEpisode(ctx, drv, lib, &w.kids[k], &show, &season)
+		}
+		return nil
+	})
 	say(total, total, "识别完成")
 }
 
@@ -652,7 +899,7 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 		}
 	}
 	if show.TMDBID > 0 && m.tmdb().Enabled() {
-		throttle()
+		throttle("tmdb")
 		sd, err := m.tmdb().TVSeason(ctx, show.TMDBID, season.Season)
 		if err == nil && sd != nil {
 			for _, e := range sd.Episodes {
@@ -1035,7 +1282,7 @@ func (m *Manager) searchTMDB(ctx context.Context, kind, query string, year int) 
 	}
 	fallback := 0
 	for _, spelling := range searchSpellings(query) {
-		throttle()
+		throttle("tmdb")
 		var results []TMDBSearchItem
 		var err error
 		if kind == "movie" {
@@ -1107,7 +1354,7 @@ func (m *Manager) tryMovieTMDB(ctx context.Context, it *models.Item, query strin
 
 func (m *Manager) tryMovieTMDBByID(ctx context.Context, it *models.Item, id int) error {
 	t := m.tmdb()
-	throttle()
+	throttle("tmdb")
 	d, err := t.MovieDetail(ctx, id)
 	if err != nil {
 		return err
@@ -1142,7 +1389,7 @@ func (m *Manager) tryShowTMDB(ctx context.Context, show *models.Item, query stri
 
 func (m *Manager) tryShowTMDBByID(ctx context.Context, show *models.Item, id int) error {
 	t := m.tmdb()
-	throttle()
+	throttle("tmdb")
 	d, err := t.TVDetail(ctx, id)
 	if err != nil {
 		return err
@@ -1210,7 +1457,7 @@ func (m *Manager) searchBGM(ctx context.Context, query string, year int) (*BgmSu
 	// select an unrelated subject.
 	var variantBases []string
 	for _, spelling := range searchSpellings(q) {
-		throttle()
+		throttle("bgm")
 		results, err := b.Search(ctx, spelling, BgmTypeAnime)
 		if err != nil {
 			return nil, err
@@ -1235,7 +1482,7 @@ func (m *Manager) searchBGM(ctx context.Context, query string, year int) (*BgmSu
 				continue
 			}
 			tried[variant] = true
-			throttle()
+			throttle("bgm")
 			hits, err := b.Search(ctx, variant, BgmTypeAnime)
 			if err != nil {
 				return nil, err
@@ -1257,6 +1504,7 @@ func (m *Manager) bgmSubjectFor(ctx context.Context, b *BangumiClient, query str
 	if best < 0 {
 		return nil
 	}
+	throttle("bgm")
 	if d, err := b.Subject(ctx, results[best].ID); err == nil && d != nil {
 		return d
 	}
@@ -1480,6 +1728,11 @@ func (m *Manager) tryEpisodeBGM(ctx context.Context, ep *models.Item, show *mode
 
 func (m *Manager) saveBGMImage(ctx context.Context, itemID int64, kind, rawURL string) string {
 	u := BgmImageProxyURL(rawURL, "l")
+	// Hosted on lain.bgm.tv, the same service the API lives on, so it shares the
+	// same budget. Downloads used to be unpaced because one item at a time made a
+	// burst impossible; the identify pass now fills a show's artwork and its
+	// season's stills at once, which is exactly a burst.
+	throttle("bgm")
 	data, err := m.bgm().DownloadImage(ctx, u)
 	if err != nil || len(data) < 100 {
 		return ""
@@ -1556,6 +1809,7 @@ func (m *Manager) restoreArtwork(ctx context.Context, lib *models.Library, it *m
 	// usually Bangumi's — applyBGM sets one and TMDB never overrides a poster
 	// that is already there.
 	if posterGone && it.BGMID > 0 && providerEnabled(lib, "bgm") && m.bgm().Enabled() {
+		throttle("bgm")
 		if sub, err := m.bgm().Subject(ctx, it.BGMID); err == nil && sub != nil && sub.PosterURL != "" {
 			if name := m.saveBGMImage(ctx, it.ID, "poster", sub.PosterURL); name != "" {
 				it.PosterPath = name
@@ -1565,7 +1819,9 @@ func (m *Manager) restoreArtwork(ctx context.Context, lib *models.Library, it *m
 
 	posterGone, backdropGone = m.imageFileMissing(it.PosterPath), m.imageFileMissing(it.BackdropPath)
 	if it.TMDBID > 0 && (posterGone || backdropGone) && providerEnabled(lib, "tmdb") && m.tmdb().Enabled() {
-		throttle()
+		// One turn per item, not per request: the detail call below yields both
+		// image paths, so its two downloads belong to the same turn.
+		throttle("tmdb")
 		var poster, backdrop string
 		if it.Type == "movie" {
 			if d, err := m.tmdb().MovieDetail(ctx, it.TMDBID); err == nil && d != nil {
