@@ -287,6 +287,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/libraries/{id}/scan", s.requireAdmin(s.handleScanLibrary))
 	mux.HandleFunc("POST /api/libraries/{id}/scan/stop", s.requireAdmin(s.handleStopScan))
 	mux.HandleFunc("GET /api/scan/status", s.requireAuth(s.handleScanStatus))
+	// what a scan could not place: files this library's type cannot take, and
+	// items no provider could identify
+	mux.HandleFunc("GET /api/libraries/{id}/issues", s.requireAuth(s.handleLibraryIssues))
 
 	// subtitle audit (which BDRip episodes have no subtitles at all)
 	mux.HandleFunc("POST /api/libraries/{id}/subtitle-audit", s.requireAdmin(s.handleSubtitleAuditStart))

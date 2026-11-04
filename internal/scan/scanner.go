@@ -272,12 +272,12 @@ func (sc *Scanner) runScanScoped(lib *models.Library, scope *scanScope) error {
 		st.Current = fmt.Sprintf("发现 %d 个视频文件,正在整理…", len(files))
 	})
 	prog.AddEvent("file", fmt.Sprintf("发现 %d 个视频文件", len(files)))
-	if err := sc.organize(lib, files, prog, current, walked, partial, listings, scope); err != nil {
+	issues, err := sc.organize(lib, files, prog, current, walked, partial, listings, scope)
+	if err != nil {
 		fail("整理失败: " + err.Error())
 		finish()
 		return err
 	}
-
 	prog.Update(func(st *models.ScanState) {
 		st.Phase = "identify"
 		st.Done, st.Total = 0, 0
@@ -301,6 +301,26 @@ func (sc *Scanner) runScanScoped(lib *models.Library, scope *scanScope) error {
 	} else if sc.OnIdentify != nil {
 		sc.OnIdentify(lib, listings, report)
 	}
+
+	// Record what this scan could not place. The identify pass runs first so
+	// its outcome is what gets recorded: an item identified a moment ago is not
+	// a scrape failure, and one that stayed bare is.
+	scopeSource, scopePath := int64(0), ""
+	if scope != nil {
+		scopeSource, scopePath = scope.SourceID, scope.Path
+	}
+	if scrape, serr := sc.Store.ScrapeIssues(lib.ID, scopeSource, scopePath); serr != nil {
+		log.Printf("scan: read scrape issues for library %d failed: %v", lib.ID, serr)
+	} else {
+		issues = append(issues, scrape...)
+	}
+	if err := sc.Store.ReplaceScanIssues(lib.ID, issues, scopeSource, scopePath); err != nil {
+		log.Printf("scan: record issues for library %d failed: %v", lib.ID, err)
+	}
+	if len(issues) > 0 {
+		prog.AddEvent("warn", fmt.Sprintf("%d 个文件未能入库或未刮到元数据", len(issues)))
+	}
+
 	// Settle the summary from the finished counters, then report it.
 	final, _ := prog.Snapshot(0)
 	prog.Update(func(st *models.ScanState) {
@@ -384,7 +404,7 @@ func (sc *Scanner) ImportSeries(ctx context.Context, lib *models.Library, source
 	current := map[int64]bool{sourceID: true}
 	walked := map[int64]bool{sourceID: true}
 	partial := map[int64]bool{sourceID: true}
-	if err := sc.organize(lib, files, prog, current, walked, partial, listings); err != nil {
+	if _, err := sc.organize(lib, files, prog, current, walked, partial, listings); err != nil {
 		return 0, err
 	}
 	return sc.showOfFile(sourceID, files[0].Path), nil
@@ -560,7 +580,7 @@ type movieGroup struct {
 	Files []fileRec
 }
 
-func (sc *Scanner) organize(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) error {
+func (sc *Scanner) organize(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	// The walk runs for minutes without touching the database, and the first
 	// statement after it is the one that fails. Ping before any real work, so a
 	// connection whose handle went stale during that idle stretch is replaced on
@@ -578,13 +598,16 @@ func (sc *Scanner) organize(lib *models.Library, files []fileRec, prog *models.S
 		excludeMatcher(EffectiveExcludes(lib, sc.Cfg)),
 		excludeMatcher(EffectiveExcludeFolders(lib, sc.Cfg)))
 
+	// Issues travel back with the organize pass so the scan can persist them
+	// beside its other results: a file the library's type cannot take would
+	// otherwise vanish without a trace.
 	switch lib.Type {
 	case "series":
-		err := sc.organizeSeries(lib, files, prog, current, walked, partial, listings, scopes...)
-		return sc.finishOrganize(lib, err)
+		issues, err := sc.organizeSeries(lib, files, prog, current, walked, partial, listings, scopes...)
+		return issues, sc.finishOrganize(lib, err)
 	default:
-		err := sc.organizeMovies(lib, files, prog, current, walked, partial, listings, scopes...)
-		return sc.finishOrganize(lib, err)
+		issues, err := sc.organizeMovies(lib, files, prog, current, walked, partial, listings, scopes...)
+		return issues, sc.finishOrganize(lib, err)
 	}
 }
 
@@ -601,11 +624,11 @@ func (sc *Scanner) finishOrganize(lib *models.Library, err error) error {
 	return err
 }
 
-func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) error {
+func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	existing, _, err := sc.Store.ItemsByLibrary(lib.ID, "movie", "", "", false, 0, 1000000)
 	if err != nil {
 		log.Printf("organize: load movies failed: %v", err)
-		return err
+		return nil, err
 	}
 	byKey := map[string]int64{}
 	for _, it := range existing {
@@ -644,9 +667,19 @@ func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *mo
 		}
 	}
 
+	var issues []models.ScanIssue
 	for i, key := range order {
 		g := groups[key]
 		if g.Title == "" {
+			// A video whose name yields no title cannot become a film. Say
+			// which file, or the shelf simply never mentions it again.
+			for _, fr := range g.Files {
+				issues = append(issues, models.ScanIssue{
+					LibraryID: lib.ID, Kind: models.ScanIssueMismatch,
+					SourceID: fr.SourceID, Path: fr.Path,
+					Detail: "文件名里读不出片名(电影库需要片名与年份)",
+				})
+			}
 			continue
 		}
 		itemID, ok := byKey[key]
@@ -657,7 +690,7 @@ func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *mo
 			}
 			it := &models.Item{LibraryID: lib.ID, Type: "movie", Name: g.Title, Year: g.Year, SourceType: st}
 			if err := sc.Store.InsertItem(it); err != nil {
-				return err
+				return issues, err
 			}
 			itemID = it.ID
 			byKey[key] = it.ID
@@ -666,7 +699,7 @@ func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *mo
 			if _, err := sc.Store.UpsertFile(&models.MediaFile{
 				ItemID: itemID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
 			}); err != nil {
-				return err
+				return issues, err
 			}
 		}
 		prog.Update(func(st *models.ScanState) {
@@ -675,7 +708,7 @@ func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *mo
 		})
 		prog.AddEvent("show", fmt.Sprintf("%s%s", g.Title, yearSuffix(g.Year)))
 	}
-	return sc.cleanup(lib, files, current, walked, partial, listings, scopes...)
+	return issues, sc.cleanup(lib, files, current, walked, partial, listings, scopes...)
 }
 
 // yearSuffix renders " (2019)" for the feed, empty when the year is unknown.
@@ -847,7 +880,7 @@ func planShow(childCount map[string]int, libPath, dir, filePath string, parsedSe
 	}
 }
 
-func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) error {
+func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	idx := &seriesIndex{
 		shows:       map[string]int64{},
 		seasons:     map[string]int64{},
@@ -859,14 +892,14 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 
 	shows, _, err := sc.Store.ItemsByLibrary(lib.ID, "show", "", "", false, 0, 100000)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, it := range shows {
 		idx.shows[NormalizeKey(it.Name)] = it.ID
 	}
 	seasons, _, err := sc.Store.ItemsByLibrary(lib.ID, "season", "", "", false, 0, 200000)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, it := range seasons {
 		if it.ParentID != nil {
@@ -1037,7 +1070,7 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			it := &models.Item{LibraryID: lib.ID, Type: "show", Name: showTitle, SourceType: fr.SrcType}
 			if err := sc.Store.InsertItem(it); err != nil {
 				log.Printf("organize: insert show %q failed: %v", showTitle, err)
-				return err
+				return nil, err
 			}
 			showID = it.ID
 			idx.shows[showKey] = showID
@@ -1108,7 +1141,7 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			pid := showID
 			it := &models.Item{LibraryID: lib.ID, Type: "season", ParentID: &pid, Name: seasonName, Season: season, SourceType: fr.SrcType}
 			if err := sc.Store.InsertItem(it); err != nil {
-				return err
+				return nil, err
 			}
 			seasonID = it.ID
 			idx.registerSeason(showID, season, seasonName, seasonID)
@@ -1143,7 +1176,7 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			it := &models.Item{LibraryID: lib.ID, Type: "episode", ParentID: &pid,
 				Name: orDefault(epName, fmt.Sprintf("第 %d 集", ep)), Season: season, Episode: ep, SourceType: fr.SrcType}
 			if err := sc.Store.InsertItem(it); err != nil {
-				return err
+				return nil, err
 			}
 			epID = it.ID
 			idx.eps[epKey] = epID
@@ -1173,7 +1206,7 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			ItemID: epID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
 		}); err != nil {
 			log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)
-			return err
+			return nil, err
 		}
 		prog.Update(func(st *models.ScanState) {
 			st.Done++
@@ -1187,7 +1220,16 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 	// imported. Drop any row a previous scan wrote for them — the file may have
 	// been imported before this rule existed, or under a different naming — so
 	// cleanup can then take away the item it left behind.
+	var issues []models.ScanIssue
 	for _, fr := range skippedFiles {
+		// The file stays in the source and can still be played from the
+		// browser, but the shelf will never show it. Record where it is so the
+		// library page can say so, instead of it disappearing silently.
+		issues = append(issues, models.ScanIssue{
+			LibraryID: lib.ID, Kind: models.ScanIssueMismatch,
+			SourceID: fr.SourceID, Path: fr.Path,
+			Detail: "剧集库只收有集号的剧集,这个文件读不出集号",
+		})
 		if len(scopes) > 0 && scopes[0] != nil {
 			// Scoped cleanup removes this row using the directory listing and
 			// can then prune just its ancestors, without a global orphan sweep.
@@ -1203,9 +1245,9 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 
 	if err := sc.cleanup(lib, imported, current, walked, partial, listings, scopes...); err != nil {
 		log.Printf("organize: cleanup failed (done=%d): %v", progDone(prog), err)
-		return err
+		return issues, err
 	}
-	return nil
+	return issues, nil
 }
 
 // progDone and progTotal read the organizer's counters, for diagnostics.

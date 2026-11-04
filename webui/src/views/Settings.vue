@@ -8,6 +8,7 @@ import EmptyState from '../components/EmptyState.vue'
 import ExcludeKeywords from '../components/ExcludeKeywords.vue'
 import LiveProgress from '../components/LiveProgress.vue'
 import PathScanDialog from '../components/PathScanDialog.vue'
+import ScanIssuesDialog from '../components/ScanIssuesDialog.vue'
 import { buildPathScanRequest } from '../libraryScan.js'
 import { toast } from '../toast.js'
 import { site, setToolbar, panelTab, publishedLabel, dirty } from '../site/store.js'
@@ -190,6 +191,7 @@ async function loadAll() {
   try {
     sources.value = (await api.get('/api/sources')) || []
     libraries.value = (await api.get('/api/libraries')) || []
+    loadIssueCounts()
     scanStates.value = (await api.get('/api/scan/status')) || []
     sys.value = await api.get('/api/system/info')
     const config = await api.get('/api/config')
@@ -602,6 +604,26 @@ async function addLibrary() {
 const pathScanLibrary = ref(null)
 const scanPending = ref({})
 const pathScanError = ref('')
+
+// The same "what could not be placed" list the library page shows behind its
+// error button: editing a library is where you go after a scan, so the entry
+// belongs here too.
+const issuesLibrary = ref(null)
+const issueCounts = ref({})
+
+async function loadIssueCounts() {
+  const rows = await Promise.all(libraries.value.map(async (lib) => {
+    try {
+      const r = await api.get(`/api/libraries/${lib.id}/issues`)
+      return [lib.id, r?.total || 0]
+    } catch {
+      return [lib.id, 0]
+    }
+  }))
+  const out = {}
+  for (const [id, n] of rows) out[id] = n
+  issueCounts.value = out
+}
 
 function openPathScan(lib) {
   if (scanPending.value[lib.id] || stFor(lib.id)?.running) return
@@ -1341,6 +1363,14 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                     </button>
                     <button class="btn sm" :disabled="scanPending[lib.id] || stFor(lib.id)?.running" @click="openPathScan(lib)">
                       <AppIcon name="folder" :size="14" /> 按路径扫描
+                    </button>
+                    <button
+                      class="btn sm" :class="{ danger: issueCounts[lib.id] > 0 }"
+                      title="上次扫描未能入库的文件与刮削失败的条目"
+                      @click="issuesLibrary = lib"
+                    >
+                      <AppIcon name="alert" :size="14" /> 错误
+                      <template v-if="issueCounts[lib.id] > 0"> {{ issueCounts[lib.id] }}</template>
                     </button>
                     <button
                       v-if="auditFor(lib.id)?.state.running"
@@ -2114,6 +2144,12 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
         </section>
       </div>
     </div>
+
+    <ScanIssuesDialog
+      v-if="issuesLibrary"
+      :library="issuesLibrary"
+      @close="issuesLibrary = null"
+    />
 
     <PathScanDialog
       v-if="pathScanLibrary"

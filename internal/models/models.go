@@ -186,6 +186,39 @@ type MediaFile struct {
 	AddedAt  time.Time `json:"added_at"`
 }
 
+// ScanIssue is one file or item a scan could not place. Two kinds are kept:
+//
+//   - "mismatch": the file is a video, but this library's type cannot take it —
+//     a series library only imports files that name an episode, and a film
+//     library needs a title it can read out of the name. The file is left out
+//     of the shelf (and is still playable through the browser), so without a
+//     record of it nothing would say where it went.
+//   - "scrape": the item was organised into the library but no provider could
+//     identify it, so it sits there as a bare folder name with no artwork.
+//
+// Rows are replaced by every scan of the library, so the list always describes
+// the library as it is now rather than as it was when a scan last ran.
+type ScanIssue struct {
+	ID        int64  `json:"id"`
+	LibraryID int64  `json:"library_id"`
+	Kind      string `json:"kind"` // mismatch | scrape
+	SourceID  int64  `json:"source_id,omitempty"`
+	// Path is the driver path (or the .strm URL) the file was listed at. Empty
+	// for an item-level issue that has no single file to point at.
+	Path string `json:"path,omitempty"`
+	// ItemID and Name identify the item the issue is about, when there is one.
+	ItemID    int64     `json:"item_id,omitempty"`
+	Name      string    `json:"name,omitempty"`
+	Detail    string    `json:"detail,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Kind values for ScanIssue.Kind.
+const (
+	ScanIssueMismatch = "mismatch"
+	ScanIssueScrape   = "scrape"
+)
+
 type Subtitle struct {
 	ID          int64  `json:"id"`
 	FileID      int64  `json:"file_id"`

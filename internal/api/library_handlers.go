@@ -620,6 +620,47 @@ func (s *Server) handleStopScan(w http.ResponseWriter, r *http.Request, user *mo
 	writeJSON(w, 200, map[string]bool{"ok": true, "stopped": stopped})
 }
 
+// handleLibraryIssues lists what the last scan of a library could not place:
+// files whose path this library's type cannot import, and items no provider
+// could identify. The library page shows them behind its error button, so a
+// file that never became a card can still be found by its path.
+func (s *Server) handleLibraryIssues(w http.ResponseWriter, r *http.Request, user *models.User) {
+	id, _ := pathID(r)
+	if _, err := s.Store.LibraryByID(id); err != nil {
+		fail(w, 404, "媒体库不存在")
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind != "" && kind != models.ScanIssueMismatch && kind != models.ScanIssueScrape {
+		fail(w, 400, "kind 只能是 mismatch 或 scrape")
+		return
+	}
+	all, err := s.Store.ScanIssues(id, "")
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	// The counts always cover both kinds: the button shows the total, so the
+	// answer has to carry it even when the request filters one kind out.
+	var mismatch, scrape int
+	issues := make([]models.ScanIssue, 0, len(all))
+	for _, is := range all {
+		switch is.Kind {
+		case models.ScanIssueMismatch:
+			mismatch++
+		case models.ScanIssueScrape:
+			scrape++
+		}
+		if kind == "" || is.Kind == kind {
+			issues = append(issues, is)
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"issues": issues, "total": mismatch + scrape,
+		"mismatch": mismatch, "scrape": scrape,
+	})
+}
+
 func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request, user *models.User) {
 	writeJSON(w, 200, s.Scanner.AllStates())
 }

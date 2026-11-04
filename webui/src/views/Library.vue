@@ -7,6 +7,7 @@ import PosterCard from '../components/PosterCard.vue'
 import SmartImage from '../components/SmartImage.vue'
 import SkeletonGrid from '../components/SkeletonGrid.vue'
 import EmptyState from '../components/EmptyState.vue'
+import ScanIssuesDialog from '../components/ScanIssuesDialog.vue'
 
 const route = useRoute()
 const libId = computed(() => route.params.id)
@@ -19,6 +20,22 @@ const sort = ref('added')
 const view = ref(localStorage.getItem('dm:libview') || 'grid')
 const loading = ref(false)
 const error = ref('')
+
+// What the last scan could not place: files this library's type cannot import,
+// and items no provider identified. The count is shown on the button so a scan
+// that silently dropped files still says so somewhere.
+const issueCount = ref(0)
+const showIssues = ref(false)
+
+async function loadIssues() {
+  if (!libId.value) return
+  try {
+    const r = await api.get(`/api/libraries/${libId.value}/issues`)
+    issueCount.value = r?.total || 0
+  } catch {
+    issueCount.value = 0
+  }
+}
 
 const lib = computed(() => libraries.value.find((l) => String(l.id) === String(libId.value)))
 const banner = computed(() => items.value.find((i) => i.backdrop_path) || items.value[0] || null)
@@ -57,9 +74,11 @@ async function load() {
 
 onMounted(async () => {
   try { libraries.value = (await api.get('/api/libraries')) || [] } catch {}
+  loadIssues()
   await load()
 })
 watch([libId, sort, type], load)
+watch(libId, loadIssues)
 let deb
 watch(search, () => { clearTimeout(deb); deb = setTimeout(load, 320) })
 
@@ -109,6 +128,14 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
         </div>
 
         <div class="right">
+          <button
+            class="issue-btn" :class="{ alert: issueCount > 0 }" :title="issueCount > 0 ? '查看未能入库 / 刮削失败的文件' : '扫描问题'"
+            @click="showIssues = true"
+          >
+            <AppIcon name="alert" :size="15" />
+            <span>错误</span>
+            <span v-if="issueCount > 0" class="n">{{ issueCount }}</span>
+          </button>
           <div class="select-wrap">
             <AppIcon name="sort" :size="15" class="select-icon" />
             <select v-model="sort" class="input sort-select">
@@ -183,6 +210,12 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
         <router-link to="/settings" class="btn primary"><AppIcon name="scan" :size="16" /> 去设置里扫描</router-link>
       </EmptyState>
     </div>
+
+    <ScanIssuesDialog
+      v-if="showIssues && lib"
+      :library="lib"
+      @close="showIssues = false"
+    />
   </div>
 </template>
 
@@ -238,6 +271,25 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
 }
 .search-box .clear:hover { background: rgba(255, 255, 255, 0.1); color: var(--text-1); }
 .filter-inner .right { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+.issue-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 13px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
+  color: var(--text-3); font-size: var(--fs-13); font-weight: 600;
+  background: var(--bg-1);
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.issue-btn:hover { color: var(--text-1); border-color: var(--line-3, var(--line-2)); }
+.issue-btn.alert { color: #ffb3b3; border-color: rgba(255, 107, 107, 0.32); background: var(--danger-soft); }
+.issue-btn.alert:hover { background: rgba(255, 107, 107, 0.2); }
+.issue-btn .n {
+  min-width: 18px; height: 18px; padding: 0 5px;
+  display: inline-grid; place-items: center;
+  border-radius: var(--r-pill);
+  background: rgba(255, 107, 107, 0.24);
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
 .select-wrap { position: relative; display: flex; align-items: center; }
 .select-icon { position: absolute; left: 11px; color: var(--text-4); pointer-events: none; }
 .sort-select { min-height: 34px; height: 34px; padding: 0 30px 0 32px; font-size: var(--fs-13); border-radius: var(--r-pill); width: auto; }

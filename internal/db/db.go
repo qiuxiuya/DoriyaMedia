@@ -213,6 +213,21 @@ func (s *Store) migrate() error {
 			convertible INTEGER DEFAULT 1,
 			UNIQUE(file_id, path, stream_idx)
 		)`,
+		// scan_issues is what a scan could not place: files this library's type
+		// cannot take, and items no provider could identify. Rewritten by each
+		// scan, so it describes the library as it stands now.
+		`CREATE TABLE IF NOT EXISTS scan_issues (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL,
+			source_id INTEGER NOT NULL DEFAULT 0,
+			path TEXT NOT NULL DEFAULT '',
+			item_id INTEGER NOT NULL DEFAULT 0,
+			name TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_scan_issues_library ON scan_issues(library_id, kind)`,
 		`CREATE TABLE IF NOT EXISTS progress (
 			user_id INTEGER NOT NULL,
 			file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -1785,6 +1800,64 @@ func firstPathSegment(path string) string {
 	return p
 }
 
+// ScrapeIssues lists the library's root items (films and series) that no
+// provider identified: no provider id and no artwork. Seasons and episodes are
+// skipped deliberately — they inherit their show's identity, so a show nobody
+// identified would otherwise repeat itself once per episode.
+//
+// A non-empty path narrows the answer to one scan scope: only items reachable
+// from files under that directory. That is what lets a path scan record its own
+// problems without claiming anything for the rest of the library.
+func (s *Store) ScrapeIssues(libraryID, sourceID int64, path string) ([]models.ScanIssue, error) {
+	q := `SELECT root.id, root.type, root.name, f.source_id, f.path
+		FROM files f
+		JOIN items ep ON ep.id = f.item_id
+		LEFT JOIN items se ON se.id = ep.parent_id AND se.type = 'season'
+		LEFT JOIN items sh ON sh.id = se.parent_id AND sh.type = 'show'
+		JOIN items root ON root.id = CASE
+			WHEN ep.type = 'movie' THEN ep.id
+			WHEN ep.type = 'episode' THEN COALESCE(sh.id, se.id)
+			ELSE ep.id END
+		WHERE root.library_id = ?
+			AND root.type IN ('movie', 'show')
+			AND root.tmdb_id = 0 AND root.bgm_id = 0
+			AND (root.poster_path IS NULL OR root.poster_path = '')
+			AND (root.backdrop_path IS NULL OR root.backdrop_path = '')`
+	args := []any{libraryID}
+	if path != "" {
+		q += ` AND f.source_id = ? AND (f.path = ? OR f.path LIKE ?)`
+		args = append(args, sourceID, path, path+"/%")
+	}
+	q += ` ORDER BY root.id, f.id`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[int64]bool{}
+	var out []models.ScanIssue
+	for rows.Next() {
+		var id, srcID int64
+		var typ, name, filePath string
+		if err := rows.Scan(&id, &typ, &name, &srcID, &filePath); err != nil {
+			return nil, err
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		detail := "没有匹配到刮削结果(未取得 TMDB / Bangumi 信息和封面)"
+		if typ == "show" {
+			detail = "这个剧集没有匹配到刮削结果(未取得 TMDB / Bangumi 信息和封面)"
+		}
+		out = append(out, models.ScanIssue{
+			LibraryID: libraryID, Kind: models.ScanIssueScrape,
+			SourceID: srcID, Path: filePath, ItemID: id, Name: name, Detail: detail,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UpdateFileProbe(id int64, probe string) error {
 	_, err := s.DB.Exec(`UPDATE files SET probe=? WHERE id=?`, probe, id)
 	return err
@@ -1815,6 +1888,77 @@ func (s *Store) FilesWithoutProbe(libraryID int64, limit int) ([]*models.MediaFi
 			return nil, err
 		}
 		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ---------- scan issues ----------
+
+// ReplaceScanIssues swaps a library's issue list for the one a scan just
+// produced. A scan is the only writer, and it sees the whole library, so
+// keeping old rows would leave issues for files that have since been fixed.
+// scoped keeps only the rows outside a path scan's subtree: a partial scan
+// cannot speak for the rest of the library.
+func (s *Store) ReplaceScanIssues(libraryID int64, issues []models.ScanIssue, scopeSourceID int64, scopePath string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if scopePath == "" {
+		if _, err := tx.Exec(`DELETE FROM scan_issues WHERE library_id = ?`, libraryID); err != nil {
+			return err
+		}
+	} else {
+		// A subtree scan owns only its own paths. Item-level rows (empty path)
+		// and files whose path is elsewhere stay as they were.
+		if _, err := tx.Exec(`DELETE FROM scan_issues
+			WHERE library_id = ? AND source_id = ? AND (path = ? OR path LIKE ?)`,
+			libraryID, scopeSourceID, scopePath, scopePath+"/%"); err != nil {
+			return err
+		}
+	}
+	now := time.Now()
+	for _, is := range issues {
+		if is.Kind == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO scan_issues
+			(library_id, kind, source_id, path, item_id, name, detail, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			libraryID, is.Kind, is.SourceID, is.Path, is.ItemID, is.Name, is.Detail, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ScanIssues lists a library's outstanding problems, mismatches first (they are
+// files the user cannot see at all) and then by path so the list reads like a
+// directory.
+func (s *Store) ScanIssues(libraryID int64, kind string) ([]models.ScanIssue, error) {
+	q := `SELECT id, library_id, kind, source_id, path, item_id, name, detail, created_at
+		FROM scan_issues WHERE library_id = ?`
+	args := []any{libraryID}
+	if kind != "" {
+		q += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	q += ` ORDER BY CASE kind WHEN 'mismatch' THEN 0 ELSE 1 END, path COLLATE NOCASE, id`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ScanIssue
+	for rows.Next() {
+		var is models.ScanIssue
+		if err := rows.Scan(&is.ID, &is.LibraryID, &is.Kind, &is.SourceID, &is.Path,
+			&is.ItemID, &is.Name, &is.Detail, &is.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, is)
 	}
 	return out, rows.Err()
 }
