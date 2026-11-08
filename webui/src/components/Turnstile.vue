@@ -119,8 +119,7 @@ watch(() => props.siteKey, () => {
     <div v-show="status !== 'failed'" ref="holder" class="holder"></div>
     <div v-if="status === 'failed'" class="flash err">
       <span>
-        人机验证加载失败:{{ detail }}。
-        这个组件需要浏览器能访问 <code>challenges.cloudflare.com</code>,国内网络通常需要代理。
+        人机验证加载失败:{{ detail }}。需浏览器能访问 <code>challenges.cloudflare.com</code>。
       </span>
     </div>
   </div>

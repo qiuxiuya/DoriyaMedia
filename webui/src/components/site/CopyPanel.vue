@@ -59,7 +59,7 @@ function cold() {
   </PanelGroup>
 
   <PanelGroup title="登录表单" icon="lock">
-    <p class="st-note">表单会在四种状态下切换文案:登录、注册、找回密码、初始化管理员。</p>
+    <p class="st-note">登录、注册、找回密码、初始化管理员各自一套文案。</p>
     <PanelField k="login.form.login.title" label="登录 · 标题" />
     <PanelField k="login.form.login.desc" label="登录 · 说明" />
     <PanelField k="login.form.register.title" label="注册 · 标题" />

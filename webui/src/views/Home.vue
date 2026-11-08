@@ -99,7 +99,7 @@ function libPath(lib) {
         v-else-if="empty"
         icon="sparkles"
         title="媒体库还是空的"
-        text="三步就能开始:添加存储源 → 创建媒体库 → 扫描。也可以直接用「文件」浏览网盘目录,点开即播。"
+        text="添加存储源 → 创建媒体库 → 扫描;也可以直接浏览文件点开即播。"
       >
         <div class="row-flex wrap" style="justify-content:center">
           <router-link to="/settings" class="btn primary"><AppIcon name="plus" :size="16" /> 添加存储源</router-link>

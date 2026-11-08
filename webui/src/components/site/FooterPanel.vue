@@ -57,7 +57,7 @@ async function goToLoginFoot() {
       <PanelField k="footer.wordmark.suffix" label="后缀(高亮部分)" />
     </div>
     <PanelField k="footer.about" label="简介段落" :rows="3" hint="支持 {version} 等占位符" />
-    <PanelField k="footer.status" label="运行状态文字" hint="前面带一个呼吸小圆点" />
+    <PanelField k="footer.status" label="运行状态文字" hint="前置呼吸圆点" />
   </PanelGroup>
 
   <PanelGroup title="链接栏目" icon="list" open>

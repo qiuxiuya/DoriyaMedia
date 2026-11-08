@@ -243,7 +243,7 @@ const loginStyle = computed(() => {
               <AppIcon :name="showPw ? 'eyeOff' : 'eye'" :size="17" />
             </button>
           </div>
-          <span v-if="setupNeeded" class="hint">这个账号拥有全部管理权限,请妥善保管。</span>
+          <span v-if="setupNeeded" class="hint">该账号拥有全部管理权限,请妥善保管。</span>
         </div>
 
         <div v-if="mode === 'register' && needsEmail" class="field">
@@ -252,7 +252,7 @@ const loginStyle = computed(() => {
             id="login-email" v-model="email" type="email" autocomplete="email"
             placeholder="you@example.com" required :disabled="busy || checking"
           />
-          <span class="hint">会发一封验证邮件,点里面的链接后才能登录。</span>
+          <span class="hint">需点击验证邮件里的链接后才能登录。</span>
         </div>
 
         <div v-if="mode === 'register'" class="field">
@@ -299,7 +299,7 @@ const loginStyle = computed(() => {
 
         <p v-if="needsApproval" class="hint approval">
           <AppIcon name="clock" :size="13" />
-          注册后需要管理员审核通过才能登录<template v-if="needsEmail">,并需要先完成邮箱验证</template>。
+          注册后需管理员审核<template v-if="needsEmail">并完成邮箱验证</template>后才能登录。
         </p>
 
         <div class="foot tiny">

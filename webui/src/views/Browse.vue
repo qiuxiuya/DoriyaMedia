@@ -149,7 +149,7 @@ function ext(name) {
 
         <EmptyState
           v-else icon="cloud" title="还没有存储源"
-          text="先到设置里添加 OpenList / WebDAV 或本地目录,然后就能在这里浏览了。"
+          text="到设置里添加一个存储源后即可浏览。"
         >
           <router-link to="/settings" class="btn primary"><AppIcon name="plus" :size="16" /> 添加存储源</router-link>
         </EmptyState>

@@ -86,7 +86,7 @@ onBeforeUnmount(() => { previousFocus?.focus() })
             「{{ library.name }}」的扫描问题
           </div>
           <p class="tiny">
-            这里列出扫描未能入库的文件、未匹配到元数据的条目及重新识别失败;缺少文件关联也会在「刮削失败」中注明。
+            列出未能入库的文件与刮削失败的条目。
             <template v-if="counts.mismatch || counts.scrape">
               类型不匹配 {{ counts.mismatch }} 个,刮削失败 {{ counts.scrape }} 个。
             </template>

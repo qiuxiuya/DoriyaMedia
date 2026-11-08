@@ -126,12 +126,8 @@ onMounted(load)
             <span class="eyebrow">Bangumi archive</span>
           </div>
           <h1>我的追番<span>.</span></h1>
-          <p v-if="connected">
-            把 Bangumi 的收藏、观看进度和本地媒体库放在同一面海报墙上。
-          </p>
-          <p v-else>
-            绑定你的 Bangumi 账户，在这里查看自己的收藏与追番进度。
-          </p>
+          <p v-if="connected">Bangumi 收藏与本地媒体库放在一起。</p>
+          <p v-else>绑定 Bangumi 账户即可查看收藏与追番进度。</p>
         </div>
 
         <div v-if="connected" class="identity">
@@ -177,7 +173,7 @@ onMounted(load)
         class="mt-5"
         icon="alert"
         title="暂时无法读取 Bangumi 收藏"
-        text="账户不一定失效，可能是 Bangumi 或网络暂时不可用。稍后再试一次。"
+        text="可能是 Bangumi 或网络暂时不可用,请稍后重试。"
       >
         <button class="btn" @click="load()">
           <AppIcon name="refresh" :size="15" /> 重新读取
@@ -191,10 +187,7 @@ onMounted(load)
         <div class="connect-copy">
           <span class="eyebrow">Connect once</span>
           <h2>把 Bangumi 收藏搬到这里</h2>
-          <p>
-            每位本地用户都可以绑定自己的 Bangumi 账户。绑定后，这里会同步展示你的动画收藏、已看集数，
-            以及哪些番已经在媒体库中可以直接播放。
-          </p>
+          <p>每位用户可绑定自己的 Bangumi 账户,同步展示收藏、已看集数与可播放的番剧。</p>
           <div class="connect-actions">
             <button class="btn primary" @click="accountOpen = true">
               <AppIcon name="link" :size="16" /> 连接 Bangumi

@@ -196,7 +196,7 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
         v-else-if="search || activeFilters"
         icon="search"
         :title="`没有匹配的条目`"
-        text="换个关键词,或清除筛选条件再看看。"
+        text="换个关键词或清除筛选条件。"
       >
         <button class="btn" @click="reset">清除筛选</button>
       </EmptyState>
@@ -205,7 +205,7 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
         v-else
         icon="film"
         title="这个媒体库还没有内容"
-        text="到 设置 → 媒体库 点「扫描」,扫描完成后海报就会出现在这里。"
+        text="到 设置 → 媒体库 执行一次扫描。"
       >
         <router-link to="/settings" class="btn primary"><AppIcon name="scan" :size="16" /> 去设置里扫描</router-link>
       </EmptyState>

@@ -102,7 +102,7 @@ onBeforeUnmount(() => { browseVersion++; previousFocus?.focus() })
       <div class="modal-head">
         <div>
           <div id="path-scan-title" class="card-title"><AppIcon name="folder" :size="16" /> 按路径扫描「{{ library.name }}」</div>
-          <p class="tiny">只扫描选定源内的这个目录及其子目录，不扫描媒体库其他路径。</p>
+          <p class="tiny">只扫描该目录及其子目录,不扫描媒体库其他路径。</p>
         </div>
       </div>
       <form @submit.prevent="submit">
@@ -116,7 +116,7 @@ onBeforeUnmount(() => { browseVersion++; previousFocus?.focus() })
         <div class="field">
           <label for="path-scan-path">源内完整目录路径</label>
           <input id="path-scan-path" v-model="path" type="text" placeholder="例如 /电影/新片" autocomplete="off" :disabled="!place || blocked || browsing" :aria-invalid="!!path && !!validation.error" aria-describedby="path-scan-hint path-scan-validation" />
-          <span id="path-scan-hint" class="hint">填写存储源内的路径（driver path），不是服务器本机挂载路径。必须是所选配置目录或其子目录；留空不会启动全量扫描。</span>
+          <span id="path-scan-hint" class="hint">填存储源内的路径（driver path），须在所选配置目录之下;留空不会启动全量扫描。</span>
           <span v-if="path && validation.error" id="path-scan-validation" class="path-scan-error" role="alert">{{ validation.error }}</span>
         </div>
         <div class="btn-row">
@@ -124,7 +124,7 @@ onBeforeUnmount(() => { browseVersion++; previousFocus?.focus() })
           <button type="button" class="btn sm" :disabled="!validation.body || blocked || browsing" @click="browse(path)">浏览输入目录</button>
         </div>
         <p v-if="browsing" class="tiny" role="status">正在读取目录…</p>
-        <p v-if="browseError" class="path-scan-error" role="alert">读取目录失败：{{ browseError }}。也可直接输入目录后提交。</p>
+        <p v-if="browseError" class="path-scan-error" role="alert">读取目录失败：{{ browseError }}</p>
         <div v-if="browsePath" class="path-scan-browser">
           <div class="path-scan-location"><span class="tiny">当前选择：{{ browsePath }}</span><button v-if="parentPath" type="button" class="btn sm" :disabled="blocked || browsing" @click="browse(parentPath)">上一级</button></div>
           <ul v-if="directories.length" class="path-scan-dirs">

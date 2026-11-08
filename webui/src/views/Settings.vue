@@ -953,7 +953,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
             <div class="card-head">
               <div>
                 <div class="card-title"><AppIcon name="plus" :size="16" /> 添加存储源</div>
-                <div class="tiny">支持 OpenList / AList、WebDAV、服务器本地目录,以及 B 站番剧(正版番剧,服务端合流 + 弹幕)。</div>
+                <div class="tiny">支持 OpenList / AList、WebDAV、本地目录与 B 站番剧。</div>
               </div>
               <button class="btn sm" @click="addingSource = !addingSource">
                 {{ addingSource ? '收起' : '展开表单' }}
@@ -1004,8 +1004,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                         placeholder="SESSDATA=xxx; bili_jct=xxx; buvid3=xxx;  —— 浏览器 F12 → 应用 → Cookie → bilibili.com 整条复制"
                       ></textarea>
                       <div class="tiny">
-                        这一条等同于你的 B 站账号(含大会员),只有管理员能读到;普通用户拿到的是掩码。
-                        想省事可以只填 <code>SESSDATA</code>,但填全更不容易被风控。
+                        等同于你的 B 站账号(含大会员),普通用户只看到掩码。可只填 <code>SESSDATA</code>,填全更不易被风控。
                       </div>
                     </div>
                     <div class="field">
@@ -1016,12 +1015,11 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                         <option value="av1">AV1(最小,但能播的设备最少)</option>
                         <option value="auto">不限,由清晰度决定</option>
                       </select>
-                      <div class="tiny">同一清晰度 B 站会同时给几种编码;AVC 是唯一所有客户端都能解、且不需要额外封装的。</div>
+                      <div class="tiny">AVC 兼容性最好,无需额外封装。</div>
                     </div>
                     <div class="field wide">
                       <div class="tiny">
-                        清晰度不在这里固定:播放时用播放器控制栏的「清晰度」按钮随时切换,
-                        默认是「自动」——取当前账号能给的最高一档(SDR 优先)。切换会从当前位置接着播。
+                        清晰度在播放时用控制栏的「清晰度」按钮切换,默认自动取当前账号最高一档(SDR 优先)。
                       </div>
                     </div>
 
@@ -1034,18 +1032,14 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                         placeholder="ss://aes-256-gcm:密码@host:8388  /  socks5://127.0.0.1:1080  /  http://127.0.0.1:7890"
                       />
                       <div class="tiny">
-                        B 站按 IP 判断地区,海外 IP 看番剧会报 <code>-10403</code>。填一个落地在<b>中国大陆</b>的代理,
-                        大陆版权的番剧就都能看;落地在<b>香港 / 澳门 / 台湾</b>则能看港澳台版权的番剧(大陆独家的看不了)。
-                        这里的流量(接口、CDN 流、服务端合流用的 ffmpeg)都会走它。
-                        支持 <b>Shadowsocks</b>(<code>ss://</code>,aes-128/256-gcm、chacha20-ietf-poly1305)、
-                        <b>SOCKS5</b>(<code>socks5://</code>,可带用户名密码)和 <b>HTTP</b> 代理(<code>http://</code>)。
-                        也可以直接从客户端配置里粘贴 <code>ss://</code> 分享链接或 JSON。
+                        B 站按 IP 判断地区。落地在中国大陆可看大陆版权,落地在港澳台可看港澳台版权。
+                        支持 <b>Shadowsocks</b>(<code>ss://</code>)、<b>SOCKS5</b>、<b>HTTP</b>,也可粘贴 <code>ss://</code> 分享链接或 JSON。
                       </div>
                       <div class="btn-row" style="margin-top:10px">
                         <button class="btn sm" :disabled="proxyTesting" @click="testBiliProxy">
                           <AppIcon name="wifi" :size="14" /> {{ proxyTesting ? '测试中…' : '测试这个代理' }}
                         </button>
-                        <span class="tiny">会经这个代理访问 B 站接口,告诉你它看到的地区</span>
+                        <span class="tiny">经该代理访问 B 站,返回它看到的地区</span>
                       </div>
                       <div v-if="proxyResult" class="flash" :class="proxyResult.ok && (proxyResult.mainland || proxyResult.hmt) ? 'ok' : 'err'" style="margin:10px 0 0">
                         <AppIcon :name="proxyResult.ok && (proxyResult.mainland || proxyResult.hmt) ? 'check' : 'alert'" :size="16" />
@@ -1059,10 +1053,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                         只上架当前线路能播放的番剧
                       </label>
                       <div class="tiny">
-                        扫描媒体库时逐季请求一次 B 站播放接口:当前地区看不了的季度(<code>-10403</code>)按空目录处理,
-                        不会进媒体库;之前扫描留下的这类剧集,重扫时也会被移除。
-                        网络失败、风控或账号问题不会误删任何东西(只有明确的地区限制才跳过)。
-                        代理在港澳台时建议保持开启 —— 它正好留下港澳台限定、跳过大陆限定。
+                        扫描时跳过当前地区看不了的季度(<code>-10403</code>)。网络或风控失败不会误删条目。
                       </div>
                     </div>
                   </template>
@@ -1084,8 +1075,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   <button v-if="editingSource" class="btn sm" @click="cancelEditSource">取消编辑</button>
                 </div>
                 <div v-if="editingSource" class="tiny" style="margin-top:8px">
-                  正在编辑「{{ srcForm.name || '未命名源' }}」。保存会用表单里的值替换整份配置,
-                  <b>清空的字段就是清空</b>(代理想去掉就清掉它);填错的占位符 <code>******</code> 不会被写回去。
+                  正在编辑「{{ srcForm.name || '未命名源' }}」,保存会整份替换配置,<b>清空的字段就是清空</b>。
                 </div>
 
                 <Transition name="fade">
@@ -1159,7 +1149,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
             <div class="card-head">
               <div>
                 <div class="card-title"><AppIcon name="plus" :size="16" /> 创建媒体库</div>
-                <div class="tiny">选择存储源与目录,扫描后会自动整理剧集结构并刮削元数据。</div>
+                <div class="tiny">选择存储源与目录,扫描后自动整理剧集并刮削元数据。</div>
               </div>
               <button class="btn sm" @click="addingLibrary = !addingLibrary">{{ addingLibrary ? '收起' : '展开表单' }}</button>
             </div>
@@ -1196,7 +1186,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                           <AppIcon name="plus" :size="14" /> 再加一个源
                         </button>
                       </div>
-                      <div class="tiny">同一个库里的多个源会一起扫描、合并成同一批剧集;某部剧拆在两个盘上也没关系。</div>
+                      <div class="tiny">多个源会一起扫描并合并成同一批剧集。</div>
                     </div>
                   </div>
                   <div class="field">
@@ -1326,14 +1316,10 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                           <AppIcon name="trash" :size="14" /> 恢复动态
                         </button>
                       </div>
-                      <div class="tiny dim">
-                        这两个按钮改完立即生效,不用点保存。自动获取取该媒体库最近入库、且已缓存海报的条目。
-                      </div>
+                      <div class="tiny dim">立即生效,无需保存。「自动获取」取最近入库且已缓存海报的条目。</div>
                     </div>
                   </div>
-                  <div v-else class="tiny dim">
-                    动态封面由该库最近入库、且已缓存海报的条目决定,新片入库后会跟着变;切到静态可以自己选一张。
-                  </div>
+                  <div v-else class="tiny dim">动态封面跟随最近入库的条目变化,切到静态可自选一张。</div>
                 </div>
                 <div class="btn-row">
                   <button class="btn primary" @click="saveEdit(lib.id)"><AppIcon name="check" :size="15" /> 保存</button>
@@ -1366,7 +1352,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                     </button>
                     <button
                       class="btn sm" :class="{ danger: issueCounts[lib.id] > 0 }"
-                      title="上次扫描未能入库的文件与刮削失败的条目"
+                      title="未入库的文件与刮削失败的条目"
                       @click="issuesLibrary = lib"
                     >
                       <AppIcon name="alert" :size="14" /> 错误
@@ -1472,12 +1458,9 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                         </div>
                       </div>
                       <div class="tiny dim audit-note">
-                        带 <b>?</b> 的还没确认完(正在探测内嵌字幕轨),可能随时从名单里消失;
-                        带 <b>!</b> 的是探测失败,还没定论。这里只查 bdrip —— WebRip 的字幕多半烧在画面里,
-                        没有文件也没有轨道可查,报了也不准。
+                        <b>?</b> 表示还在确认,<b>!</b> 表示探测失败。只查 bdrip(WebRip 字幕多半已烧录,查了不准)。
                         <template v-if="auditFor(lib.id).state.unverified">
-                          另有 {{ auditFor(lib.id).state.unverified }} 个文件因为所在目录读不出来(源上已删除或无权限)没有计入,
-                          它们既不算缺字幕也不算有字幕。
+                          另有 {{ auditFor(lib.id).state.unverified }} 个文件所在目录读不出来,未计入统计。
                         </template>
                       </div>
                     </div>
@@ -1498,18 +1481,18 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field wide">
                 <label>API Key</label>
                 <input v-model="cfg.tmdb.api_key" placeholder="API 密钥(v3)或 API 读访问令牌(v4)均可" />
-                <span class="hint">保存后立即生效,无需重启;国内网络请开启下面的本地代理,或把地址换成镜像。</span>
+                <span class="hint">保存即生效。国内网络请开启下方代理或使用镜像。</span>
               </div>
               <div class="field"><label>语言</label><input v-model="cfg.tmdb.language" placeholder="zh-CN" /></div>
               <div class="field">
                 <label>API 地址(可填镜像/反代)</label>
                 <input v-model="cfg.tmdb.api_base" placeholder="https://api.themoviedb.org" />
-                <span class="hint">只填域名即可,会自动补上 <b>/3</b>;结尾带不带 <b>/</b> 都行。镜像把接口挂在别的路径时,按你填的路径原样使用。</span>
+                <span class="hint">只填域名即可,自动补 <b>/3</b>;自定义路径按原样使用。</span>
               </div>
               <div class="field">
                 <label>图片地址(可填镜像/反代)</label>
                 <input v-model="cfg.tmdb.img_base" placeholder="https://image.tmdb.org" />
-                <span class="hint">同样只填域名即可,会自动补上 <b>/t/p</b>;结尾带不带 <b>/</b> 都行。</span>
+                <span class="hint">只填域名即可,自动补 <b>/t/p</b>。</span>
               </div>
               <div class="field wide">
                 <label>网络代理</label>
@@ -1518,7 +1501,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   走本地代理访问 TMDB(国内直连不通时必开)
                 </label>
                 <input v-model="cfg.tmdb.proxy" placeholder="socks5://127.0.0.1:7890" :disabled="!cfg.tmdb.use_proxy" />
-                <span class="hint">支持 socks5:// 与 http://(Clash / v2rayN 默认端口通常是 7890)。海报与背景图下载也走这个代理。</span>
+                <span class="hint">支持 socks5:// 与 http://,海报下载也走这个代理。</span>
                 <div class="test-line">
                   <button class="btn" :disabled="tmdbTesting" @click="testTMDB">
                     <AppIcon name="wifi" :size="15" /> {{ tmdbTesting ? '测试中…' : '测试连接' }}
@@ -1537,7 +1520,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field wide">
                 <label>访问令牌(可选)</label>
                 <input v-model="cfg.bgm.token" placeholder="留空即可,公开接口够用;填了可提高限流上限" />
-                <span class="hint">Bangumi 是番剧信息最全的中文数据源:中文剧名、每集中文标题、播出日期、评分与标签。在媒体库里勾选 <b>Bangumi</b> 才启用。</span>
+                <span class="hint">番剧中文元数据最全的来源,需在媒体库里勾选 <b>Bangumi</b> 才启用。</span>
               </div>
               <div class="field">
                 <label>API 地址(可填镜像/反代)</label>
@@ -1547,7 +1530,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <label>网络代理</label>
                 <label class="check-line">
                   <input type="checkbox" v-model="cfg.bgm.use_proxy" />
-                  走本地代理访问 Bangumi(api.bgm.tv 常被 DNS 污染,建议保持开启)
+                  走本地代理访问 Bangumi(建议开启)
                 </label>
                 <input v-model="cfg.bgm.proxy" placeholder="socks5://127.0.0.1:7890" :disabled="!cfg.bgm.use_proxy" />
                 <div class="test-line">
@@ -1576,27 +1559,25 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   <option value="remux">强制 HLS 转封装</option>
                 </select>
                 <span class="hint">
-                  自动决策:客户端能直接播的走 302/代理,不兼容的自动转封装(H.264/H.265 视频流直拷,CPU 几乎无消耗)。
-                  失败后的备用顺序是 直连 → 代理 → 转封装,而且只会尝试这个客户端真的有可能播的方式。
-                  <b>服务器不再转码</b>:本机解码不了的编码(如 AV1、10bit H.264)会明确提示无法播放,
-                  不会偷偷起一个实时编码把 CPU 吃满。
+                  自动:能直播走 302/代理,不兼容的转封装(视频流直拷,几乎不耗 CPU)。
+                  <b>服务器不转码</b>,解码不了的编码会明确提示无法播放。
                 </span>
               </div>
               <div class="field"><label>HLS 分片时长(秒)</label><input v-model="cfg.playback.segment_seconds" type="number" step="1" min="2" max="10" /></div>
               <div class="field">
                 <label>字幕烧录输出高度(像素)</label>
                 <input v-model="cfg.playback.transcode_height" type="number" step="80" min="480" max="2160" />
-                <span class="hint">只有「烧录图形字幕」这一条路会重新编码画面,这里限制它的输出高度(默认 1080)。普通播放永不转码。</span>
+                <span class="hint">仅「烧录图形字幕」会重新编码画面,此处限制输出高度(默认 1080)。</span>
               </div>
               <div class="field">
                 <label>探测读取上限(MB)</label>
                 <input v-model="cfg.playback.probe_size_mb" type="number" step="1" min="1" max="256" />
-                <span class="hint">决定起播前要从网盘读多少数据来识别容器/编码。默认 8MB,越小起播越快;读不出来时会自动用 50MB 深度探测兜底。</span>
+                <span class="hint">起播前读取的数据量(默认 8MB),越小越快;读不出来会自动深度探测。</span>
               </div>
               <div class="field">
                 <label>探测分析时长(秒)</label>
                 <input v-model="cfg.playback.probe_analyze_sec" type="number" step="1" min="1" max="60" />
-                <span class="hint">探测时分析多少秒的数据流,默认 4 秒。音轨/字幕流很靠后的片源可以调大。</span>
+                <span class="hint">分析多少秒的数据流(默认 4 秒),音轨/字幕靠后的片源可调大。</span>
               </div>
               <div class="field wide">
                 <label>扫描后预探测</label>
@@ -1604,17 +1585,17 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   <input type="checkbox" v-model="cfg.playback.preprobe_after_scan" />
                   扫描完成后在后台预探测新文件(打开即播,不用等)
                 </label>
-                <span class="hint">只探测文件名未缓存过的文件,限流串行执行,不会与播放抢带宽。</span>
+                <span class="hint">只探测未缓存的文件,限流执行,不影响播放。</span>
               </div>
               <div class="field">
                 <label>预探测文件数上限</label>
                 <input v-model="cfg.playback.preprobe_max_files" type="number" step="10" min="0" :disabled="!cfg.playback.preprobe_after_scan" />
-                <span class="hint">每次扫描最多预探测多少个文件,0 表示不限。大库建议限量,避免把网盘读限速。</span>
+                <span class="hint">每次扫描的预探测上限,0 为不限。大库建议限量。</span>
               </div>
               <div class="field">
                 <label>预探测并发数</label>
                 <input v-model="cfg.playback.preprobe_concurrency" type="number" step="1" min="1" max="8" :disabled="!cfg.playback.preprobe_after_scan" />
-                <span class="hint">默认 1(串行)。网盘容易限速时不要调大。</span>
+                <span class="hint">默认 1(串行),网盘限速时不要调大。</span>
               </div>
               <div class="field wide">
                 <label>HEVC 直拷(iOS / Apple)</label>
@@ -1623,9 +1604,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   允许 Apple 设备把 HEVC 直拷进 MPEG-TS
                 </label>
                 <span class="hint">
-                  <b>建议保持关闭</b>：Apple 不解码 MPEG-TS 里的 HEVC,直拷会变成「有声音、没画面」。
-                  关闭时这类片子会被判为无法播放 —— 想让它能播,请打开下面的「会话打包」,
-                  那才是把 HEVC 直拷给 Apple 的正确形式(fMP4)。
+                  <b>建议关闭</b>:Apple 不解码 MPEG-TS 里的 HEVC,直拷会有声无画。想让 HEVC 可播请打开下方「会话打包」。
                 </span>
               </div>
               <div class="field wide">
@@ -1634,19 +1613,13 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   <input type="checkbox" v-model="cfg.playback.hls_session_packager" />
                   用长驻 ffmpeg 打包 fMP4,让 Apple 设备直拷 HEVC 而不转码
                 </label>
-                <span class="hint">
-                  Apple 只接受 fMP4 里的 HEVC,这个模式会输出正确的 fMP4(带 #EXT-X-MAP 与 hvc1),
-                  于是 HEVC 不再转码、CPU 几乎为零。每个分片只生成一次、不再逐片重启 ffmpeg,
-                  也不再来回重读探测窗口。
-                </span>
+                <span class="hint">输出符合 Apple 要求的 fMP4,HEVC 不再转码,CPU 几乎为零。</span>
               </div>
               <div class="field">
                 <label>分片缓存上限(MB)</label>
                 <input v-model="cfg.playback.hls_cache_mb" type="number" step="256" min="0" />
                 <span class="hint">
-                  打包完成的产物留在 <code>data/cache/hls</code>,同一部片子**再次播放直接秒开**;
-                  超出上限时按最近最少使用淘汰,未完成的残留会在启动时清掉。填 0 表示不留缓存
-                  (播放结束即删)。默认 2048。
+                  产物缓存在 <code>data/cache/hls</code>,再次播放秒开;超出上限按最近最少使用淘汰,0 表示不留缓存。
                 </span>
               </div>
             </div>
@@ -1663,7 +1636,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
           <!-- signup policy -->
           <div class="card">
             <div class="card-title"><AppIcon name="lock" :size="16" /> 注册与登录</div>
-            <div class="tiny">决定别人能不能自己注册账号。改完立刻生效,不需要重启。</div>
+            <div class="tiny">决定谁能自己注册账号,改完立即生效。</div>
 
             <div class="reg-modes">
               <button
@@ -1681,7 +1654,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field">
                 <label>密码最短长度</label>
                 <input v-model.number="cfg.users.min_password" type="number" min="4" max="128" step="1" />
-                <span class="hint">注册、管理员建号与改密都按这个长度校验,至少 4 位。</span>
+                <span class="hint">注册与改密的最小长度,至少 4 位。</span>
               </div>
               <div class="field wide">
                 <label class="check-line">
@@ -1689,12 +1662,9 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   注册需要邮箱验证(注册后必须点邮件里的链接才能登录)
                 </label>
                 <span v-if="verifyButNoMail" class="hint warn-text">
-                  还没填 SMTP 服务器,邮箱验证不会生效,注册也会被拒绝 —— 请先到「邮件与验证」里配好。
+                  未配置 SMTP,邮箱验证不会生效且注册会被拒绝,请先在「邮件与验证」里配好。
                 </span>
-                <span v-else class="hint">
-                  只影响自助注册的新账号;<b>已有账号不受影响</b>(它们没有邮箱,不会被挡在门外)。
-                  管理员建的账号、以及用账号设置自己绑邮箱的人,都由你或他们自己验证。
-                </span>
+                <span v-else class="hint">只影响新注册账号,<b>已有账号不受影响</b>。</span>
               </div>
             </div>
             <div class="save-bar flat">
@@ -1726,7 +1696,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
             <div class="card-head">
               <div>
                 <div class="card-title"><AppIcon name="plus" :size="16" /> 添加用户</div>
-                <div class="tiny">注册关闭时也能用这里直接建号;管理员可以进后台。</div>
+                <div class="tiny">注册关闭时也可在这里直接建号。</div>
               </div>
               <button class="btn sm" @click="addingUser = !addingUser">{{ addingUser ? '收起' : '展开表单' }}</button>
             </div>
@@ -1833,9 +1803,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
         <section v-show="tab === 'mail'" class="stack">
           <div class="card">
             <div class="card-title"><AppIcon name="link" :size="16" /> 邮件发送(SMTP)</div>
-            <div class="tiny">
-              注册验证、找回密码都靠它发信。填好后用下面的「测试发送」验证一次,不收信就没必要开邮箱验证。
-            </div>
+            <div class="tiny">注册验证与找回密码的邮件都依赖它,填好后请「测试发送」一次。</div>
 
             <div class="preset-row">
               <span class="tiny">快速填充:</span>
@@ -1854,12 +1822,12 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field">
                 <label>用户名</label>
                 <input v-model="cfg.smtp.username" placeholder="you@qq.com" />
-                <span class="hint">一般是完整邮箱地址。</span>
+                <span class="hint">通常是完整邮箱地址。</span>
               </div>
               <div class="field">
                 <label>密码 / 授权码</label>
                 <input v-model="cfg.smtp.password" type="password" placeholder="不是登录密码,是邮箱设置里生成的授权码" />
-                <span class="hint">QQ / 163 / Gmail 都要用「授权码」或「应用专用密码」,不是网页登录密码。</span>
+                <span class="hint">用邮箱生成的授权码 / 应用专用密码,不是网页登录密码。</span>
               </div>
               <div class="field">
                 <label>发件人地址</label>
@@ -1889,12 +1857,12 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field">
                 <label>发送走代理(可选)</label>
                 <input v-model="cfg.smtp.proxy" placeholder="socks5://127.0.0.1:7890" />
-                <span class="hint">留空直连。Gmail 的 SMTP 在国内需要代理才能连上。</span>
+                <span class="hint">留空直连;国内连 Gmail 需要代理。</span>
               </div>
               <div class="field">
                 <label>站点地址(邮件里的链接用)</label>
                 <input v-model="cfg.users.base_url" placeholder="https://media.example.com" />
-                <span class="hint">留空则按访问者的地址自动拼。反代/域名访问时建议填,否则邮件里的链接可能指向内网地址。</span>
+                <span class="hint">留空按访问地址自动拼,反代/域名访问时建议填写。</span>
               </div>
             </div>
 
@@ -1929,7 +1897,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
             <div class="card-head">
               <div>
                 <div class="card-title"><AppIcon name="lock" :size="16" /> Cloudflare 人机验证(Turnstile)</div>
-                <div class="tiny">在登录页与注册页显示验证组件,挡住脚本猜密码和批量注册。免费,去 Cloudflare 后台建一个 Turnstile 站点即可拿到两把钥匙。</div>
+                <div class="tiny">登录页与注册页显示人机验证,防脚本撞库与批量注册。</div>
               </div>
               <label class="switch" :class="{ on: cfg.turnstile.enabled }" :aria-checked="!!cfg.turnstile.enabled" role="switch">
                 <input type="checkbox" v-model="cfg.turnstile.enabled" class="sr-only" />
@@ -1951,20 +1919,18 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <label>服务端校验走代理(可选)</label>
               <input v-model="cfg.turnstile.proxy" placeholder="socks5://127.0.0.1:7890" />
               <span class="hint">
-                这只影响服务端向 Cloudflare 发起的校验请求;访客浏览器仍要能访问
-                <code>challenges.cloudflare.com</code> 才能显示出验证框 —— 国内网络下这是最大的一道坎。
+                仅影响服务端校验请求;访客浏览器仍需能访问 <code>challenges.cloudflare.com</code>。
               </span>
             </div>
 
             <div v-if="cfg.turnstile.enabled && !(cfg.turnstile.site_key && cfg.turnstile.secret_key)" class="flash warn">
               <AppIcon name="alert" :size="16" />
-              <span>两把钥匙都填齐才会真正生效,现在这样等于没开。</span>
+              <span>需填齐 Site Key 与 Secret Key 才会生效。</span>
             </div>
             <div v-if="cfg.turnstile.enabled && cfg.turnstile.site_key && cfg.turnstile.secret_key" class="flash warn">
               <AppIcon name="alert" :size="16" />
               <span>
-                开启后,如果服务器连不上 Cloudflare,<b>所有人都无法登录</b>(包括你)。
-                真遇上这情况:把 config.json 里的 <code>turnstile.enabled</code> 改成 false 再重启服务。
+                服务器连不上 Cloudflare 时<b>所有人都无法登录</b>;可在 config.json 里把 <code>turnstile.enabled</code> 改为 false 并重启。
               </span>
             </div>
 
@@ -1980,10 +1946,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
           <div class="card">
             <div class="card-title"><AppIcon name="wand" :size="16" /> 用编辑工具栏改站点外观</div>
             <p class="tiny" style="line-height: 1.7; margin: 0">
-              打开工具栏后,页面右下角会出现一条浮动工具栏(<b>文案 / 布局 / 页脚</b>)。
-              标题、段落、按钮文字都可以直接在页面上点着改,右边调布局,
-              改动<b>立刻</b>能在页面上看到;<b>发布</b>之后所有访客才会看到新版本。
-              快捷键:Ctrl/Cmd + S 发布,Ctrl/Cmd + Z 撤销。
+              可直接在页面上点改文字与布局,<b>发布</b>后访客可见。Ctrl/Cmd + S 发布,Z 撤销。
             </p>
             <div class="row-flex wrap" style="margin-top: 14px">
               <button class="btn" @click="openEditor('/login', 'copy')">
@@ -2027,9 +1990,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <input :value="site.doc.footer.status" readonly />
               </div>
             </div>
-            <p class="tiny" style="margin: 0">
-              这些内容随时可以在工具栏里改,这里只是让你一眼看到当前用的是哪一版。
-            </p>
+            <p class="tiny" style="margin: 0">以上内容可随时在工具栏里修改。</p>
           </div>
         </section>
 
@@ -2061,7 +2022,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
             <div class="card-head">
               <div>
                 <div class="card-title"><AppIcon name="tv" :size="16" /> Emby 设置</div>
-                <div class="tiny">管理 Emby 兼容服务,让支持 Emby 的客户端连接当前媒体库。</div>
+                <div class="tiny">让支持 Emby 的客户端连接当前媒体库。</div>
               </div>
               <label class="switch" :class="{ on: cfg.emby.enabled }">
                 <input type="checkbox" v-model="cfg.emby.enabled" class="sr-only" role="switch" aria-label="启用 Emby 兼容服务" :aria-checked="!!cfg.emby.enabled" />
@@ -2073,16 +2034,13 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 <label for="emby-name">Emby 名称</label>
                 <input id="emby-name" v-model="cfg.emby.name" placeholder="DoriyaMedia" />
                 <span class="hint">
-                  客户端显示的服务器名称,留空使用 DoriyaMedia。保存后由
-                  <code>System/Info</code> 与 <code>System/Configuration</code> 同时下发;
-                  已经连上的客户端会缓存旧名字,需要在客户端里删除服务器再重新添加
-                  (或重装客户端数据)才会刷新。
+                  客户端显示的服务器名称,留空使用 DoriyaMedia。已连接的客户端会缓存旧名称,需重新添加服务器才会刷新。
                 </span>
               </div>
               <div class="field">
                 <label for="emby-icon">Emby 图标</label>
                 <input id="emby-icon" v-model="cfg.emby.icon" placeholder="https://example.com/icon.png" aria-describedby="emby-icon-hint" />
-                <span id="emby-icon-hint" class="hint">填写 HTTP(S) 图片地址或以 / 开头的站内路径,留空使用默认图标。客户端需要能够访问该地址。</span>
+                <span id="emby-icon-hint" class="hint">填 HTTP(S) 图片地址或以 / 开头的站内路径,留空用默认图标,客户端需能访问该地址。</span>
               </div>
             </div>
 
@@ -2099,7 +2057,7 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
             </div>
 
             <div class="save-bar flat">
-              <span class="tiny">关闭后停止 Emby 客户端访问,不影响网页端使用。客户端可能缓存名称和图标。</span>
+              <span class="tiny">关闭后 Emby 客户端无法访问,网页端不受影响。</span>
               <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
             </div>
           </div>
@@ -2110,29 +2068,26 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               <div class="field">
                 <label>ffmpeg</label>
                 <input v-model="cfg.ffmpeg" />
-                <span class="hint">转封装、字幕烧录与字幕转换都依赖它。找不到时填绝对路径。</span>
+                <span class="hint">转封装与字幕处理依赖它,找不到时请填绝对路径。</span>
               </div>
               <div class="field"><label>ffprobe</label><input v-model="cfg.ffprobe" /></div>
               <div class="field">
                 <label>扫描并发数</label>
                 <input v-model="cfg.scan_concurrency" type="number" min="1" max="16" />
-                <span class="hint">网盘源建议 2–4,本地磁盘可以更高。</span>
+                <span class="hint">网盘源建议 2–4,本地磁盘可更高。</span>
               </div>
               <div class="field wide">
                 <label>扫描排除(文件名,全局默认)</label>
                 <ExcludeKeywords v-model="cfg.exclude_keywords" />
                 <span class="hint">
-                  命中的文件不会被导入媒体库——不当剧集、不当电影、不出卡片,也不会被刮削;文件浏览里仍然能播。
-                  下面的媒体库可以「跟随全局」或单独设一份。用 /…/ 包起来就是正则,如 /(?i)^\[pv\d+\]$/。
+                  命中文件不入库,但仍可在文件浏览里播放。用 /…/ 包裹即为正则,如 /(?i)^\[pv\d+\]$/。
                 </span>
               </div>
               <div class="field wide">
                 <label>扫描排除文件夹(全局默认)</label>
                 <ExcludeKeywords v-model="cfg.exclude_folders" kind="folder" />
                 <span class="hint">
-                  按文件夹名匹配,任意一层目录命中,它下面的文件就一律不入库——不当剧集、不当电影、不出卡片,也不会被刮削;
-                  文件浏览里仍然能播。适合「特典」「Extras」「Sample」这类目录。同样支持 /…/ 正则,如 /^(CD|DVD)\d+$/。
-                  两份名单默认都是空的,由你决定排除什么。
+                  任意一层目录名命中,其下文件一律不入库,适合特典 / Extras / Sample。同样支持 /…/ 正则。
                 </span>
               </div>
             </div>
@@ -2169,14 +2124,14 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
           <div class="modal-head">
             <div>
               <div class="card-title"><AppIcon name="lock" :size="16" /> 重置「{{ pwTarget.name }}」的密码</div>
-              <div class="tiny">保存后该账号在其他设备上的登录会全部失效。</div>
+              <div class="tiny">该账号在其他设备上的登录会全部失效。</div>
             </div>
           </div>
           <form @submit.prevent="savePassword">
             <div class="field">
               <label for="user-pw">新密码</label>
               <input id="user-pw" v-model="pwValue" type="text" :placeholder="`至少 ${cfg.users.min_password || 4} 位`" autofocus />
-              <span class="hint">明文显示,方便你转告对方;对方登录后可在「账号设置」里自行修改。</span>
+              <span class="hint">明文显示便于转告,对方登录后可自行修改。</span>
             </div>
             <div class="btn-row">
               <button type="button" class="btn" @click="pwTarget = null">取消</button>

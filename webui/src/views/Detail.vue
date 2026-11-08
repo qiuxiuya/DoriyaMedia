@@ -132,7 +132,7 @@ function seasonBackdrop(s) {
             <span v-for="g in genres" :key="g" class="badge plain">{{ g }}</span>
           </div>
 
-          <p class="overview" :class="{ open: expanded }">{{ item.overview || '暂无简介。可以在右上角「重新识别」用 TMDB / Bangumi 补全信息。' }}</p>
+          <p class="overview" :class="{ open: expanded }">{{ item.overview || '暂无简介,可用右上角「重新识别」补全。' }}</p>
           <button v-if="(item.overview || '').length > 120" class="more-link" @click="expanded = !expanded">
             {{ expanded ? '收起' : '展开全部' }}
             <AppIcon :name="expanded ? 'chevronUp' : 'chevronDown'" :size="13" />
@@ -161,7 +161,7 @@ function seasonBackdrop(s) {
                     <input v-model="pinBGM" class="input" placeholder="如 328609" inputmode="numeric" @keyup.enter="refreshBGM" />
                     <button class="btn primary" :disabled="busy || !pinBGM" @click="refreshBGM">匹配</button>
                   </div>
-                  <div class="tiny">番剧名字有歧义时,在 bgm.tv 找到条目后把 URL 里的数字填进来即可钉住这一部。</div>
+                  <div class="tiny">有歧义时填入 bgm.tv 条目 URL 里的数字即可指定。</div>
                 </div>
               </Transition>
             </div>
@@ -200,7 +200,7 @@ function seasonBackdrop(s) {
             </router-link>
           </div>
         </section>
-        <EmptyState v-else icon="tv" title="还没有识别到季" text="重新扫描媒体库,或检查目录命名是否符合「第 1 季 / S01」这类结构。" />
+        <EmptyState v-else icon="tv" title="还没有识别到季" text="重新扫描媒体库,或检查目录命名是否为 第 1 季 / S01 这类结构。" />
       </template>
 
       <!-- ================= movie / episode: files ================= -->
@@ -285,7 +285,7 @@ function seasonBackdrop(s) {
 
         <EmptyState
           v-else icon="file" title="没有找到视频文件"
-          text="条目已识别,但没有关联的媒体文件。到设置里对该媒体库重新扫描一次。"
+          text="条目已识别但没有关联文件,请对该媒体库重新扫描。"
         />
       </template>
     </div>

@@ -285,7 +285,7 @@ function signOut() {
             <input id="acct-name" v-model="name" :disabled="busy" @keyup.enter="rename" />
             <button class="btn sm" :disabled="busy || !name.trim() || name === me?.name" @click="rename">改名</button>
           </div>
-          <span class="hint">登录时使用的名字,改完立即生效。</span>
+          <span class="hint">登录名,改完立即生效。</span>
         </div>
 
         <!-- 邮箱:忘记密码时唯一的自救途径,所以每个账号都能绑 -->
@@ -305,14 +305,14 @@ function signOut() {
           </div>
           <span v-if="me?.email" class="hint">
             <template v-if="me.email_verified">
-              <span class="badge ok">已验证</span> 忘记密码时可以用这个邮箱重置。
+              <span class="badge ok">已验证</span> 可用于重置密码。
             </template>
             <template v-else>
-              <span class="badge warn">未验证</span> 还没点邮件里的链接
-              <button class="linkish" :disabled="emailBusy" @click="resendVerification">重新发送</button>
+              <span class="badge warn">未验证</span>
+              <button class="linkish" :disabled="emailBusy" @click="resendVerification">重新发送验证邮件</button>
             </template>
           </span>
-          <span v-else class="hint">绑定后忘记密码可以自己重置,不必找管理员。</span>
+          <span v-else class="hint">绑定后可自助重置密码。</span>
         </div>
 
         <!-- Bangumi:每个账号连接自己的令牌,同步只写入这个账号的收藏 -->
@@ -400,9 +400,7 @@ function signOut() {
           </template>
 
           <template v-else>
-            <p class="bgm-intro">
-              连接后，这台服务器只同步<b>你个人</b>的 Bangumi 收藏与章节进度。每个用户可以使用不同的 Bangumi 账户。
-            </p>
+            <p class="bgm-intro">只同步<b>你个人</b>的 Bangumi 收藏与进度。</p>
           </template>
 
           <div v-if="!bgmLoading && (!bgm?.connected || bgmShowToken)" class="bgm-connect">
@@ -421,9 +419,7 @@ function signOut() {
                 {{ bgmBusy ? '验证中…' : (bgm?.connected ? '更换' : '连接') }}
               </button>
             </div>
-            <span class="hint">
-              在 Bangumi 的「个人令牌」页生成后直接粘贴。令牌会加密保存在服务器上，接口永远不会回显。
-            </span>
+            <span class="hint">在 Bangumi「个人令牌」页生成后粘贴,令牌会加密保存且不会回显。</span>
           </div>
 
           <Transition name="fade">
@@ -447,7 +443,7 @@ function signOut() {
           <div class="field">
             <label for="acct-confirm">确认新密码</label>
             <input id="acct-confirm" v-model="confirm" type="password" autocomplete="new-password" :disabled="busy" required />
-            <span class="hint">改完只有当前设备保持登录,其他设备需要重新登录。</span>
+            <span class="hint">改完仅当前设备保持登录。</span>
           </div>
           <button class="btn primary block" :disabled="busy || !current || !next">
             {{ busy ? '请稍候…' : '修改密码' }}

@@ -144,9 +144,7 @@ function back() {
       <div class="info">
         <span class="eyebrow"><AppIcon name="cloud" :size="13" /> B 站片库 · 搜索入库</span>
         <h1 class="display-2">{{ title }}</h1>
-        <p class="lede">
-          这一部还没有进媒体库。现在从 B 站把它的季度与剧集建立进来,入库完成后会自动打开详情页。
-        </p>
+        <p class="lede">正在从 B 站建库,完成后自动打开详情页。</p>
 
         <div class="bar-wrap" :class="{ indet: stage !== 'done' && !pct }">
           <div class="bar"><i :style="{ width: (stage === 'done' ? 100 : pct) + '%' }"></i></div>

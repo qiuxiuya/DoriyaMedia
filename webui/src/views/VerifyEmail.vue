@@ -53,7 +53,7 @@ async function confirm() {
       </h1>
 
       <p v-if="message" class="small" :class="{ bad: state === 'failed' }">{{ message }}</p>
-      <p v-else class="small">点下面的按钮完成验证,之后就可以用这个账号登录了。</p>
+      <p v-else class="small">点击下方按钮完成验证。</p>
 
       <button
         v-if="state === 'idle' || state === 'working'"
@@ -69,7 +69,7 @@ async function confirm() {
       </button>
 
       <p v-if="state === 'failed'" class="tiny mt-4">
-        链接过期了?在登录页点「忘记密码」下面的位置可以重新发送一封验证邮件。
+        链接可能已过期,可在登录页重新发送验证邮件。
       </p>
     </div>
   </div>

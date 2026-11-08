@@ -44,7 +44,7 @@ const toneOptions = Object.keys(ART_TONES).map((id) => ({
         class="st-range" type="range" min="300" max="560" step="10" :value="L.formWidth"
         @input="setField('login.layout.formWidth', Number($event.target.value))"
       />
-      <div class="st-hint">窄一点更像登录门户,宽一点更好填。</div>
+      <div class="st-hint">窄偏门户,宽更好填。</div>
     </div>
     <div class="st-row">
       <div class="st-label">圆角</div>
@@ -102,6 +102,6 @@ const toneOptions = Object.keys(ART_TONES).map((id) => ({
         <AppIcon v-if="site.doc.site.accent === a.id" name="check" :size="14" />
       </button>
     </div>
-    <div class="st-hint">作用于登录页与页脚的高亮色,不改动后台其他页面。</div>
+    <div class="st-hint">仅作用于登录页与页脚。</div>
   </PanelGroup>
 </template>

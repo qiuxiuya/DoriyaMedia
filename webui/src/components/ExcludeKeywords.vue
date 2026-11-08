@@ -120,7 +120,7 @@ function setMode(next) {
     <div v-else-if="mode && !custom" class="tiny muted">这个库使用全局列表;要单独调整就切到「自定义」。</div>
     <div class="tiny muted">
       <template v-if="isFolder">
-        按文件夹名匹配,任意一层目录命中就跳过它下面的所有文件;英文按整词,中文按包含。库的根目录本身不算。
+        任意一层目录名命中即跳过其下所有文件;英文按整词,中文按包含,库根目录不算。
       </template>
       <template v-else>
         按文件名匹配,英文按整词(如 pv 命中 [PV1],不会命中 Spy);中文按包含。

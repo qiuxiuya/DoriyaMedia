@@ -1630,8 +1630,8 @@ async function startCand(i) {
   if (i >= cands.value.length) {
     isLoading.value = false
     const tried = cands.value.map(candName).join(' → ')
-    fatal.value = `所有播放方式都失败了(已尝试:${tried})。可以换一条音轨,或手动指定一种方式重试。` +
-      (lastServerReason ? `\n服务端说:${lastServerReason}` : '')
+    fatal.value = `所有播放方式都失败(已尝试:${tried})。可换音轨或手动指定方式重试。` +
+      (lastServerReason ? `\n服务端返回:${lastServerReason}` : '')
     return
   }
   if (candFor !== i) { candFor = i; candTries = 0; candMeta = false; lastServerReason = ''; resumeAt.value = 0 }
@@ -3249,8 +3249,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-if="encoderTooSlow" class="cs-hint">
                   <div class="cs-hint-t">
-                    服务器生成分片的速度只有实时速度的 {{ streamRate.toFixed(2) }} 倍,追不上播放。
-                    通常是片源读取慢;换个方式或稍等再试。
+                    分片生成速度只有实时速度的 {{ streamRate.toFixed(2) }} 倍,追不上播放。
                   </div>
                   <div class="cs-actions">
                     <button class="btn sm" @click="loadDecision('remux')">强制转封装</button>
@@ -3258,7 +3257,7 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <div v-else-if="slowHint" class="cs-hint">
-                  <div class="cs-hint-t">这个片源读取得慢,当前方式追不上播放速度。</div>
+                  <div class="cs-hint-t">片源读取慢,当前方式追不上播放速度。</div>
                   <div class="cs-actions">
                     <button class="btn sm" @click="loadDecision('remux')">强制转封装</button>
                     <button class="btn sm" @click="loadDecision()">重试自动</button>
@@ -3612,8 +3611,7 @@ onBeforeUnmount(() => {
               <div class="wl-text">{{ loadingText }}</div>
               <div v-if="encoderTooSlow" class="cs-hint">
                 <div class="cs-hint-t">
-                  服务器生成分片的速度只有实时速度的 {{ streamRate.toFixed(2) }} 倍,追不上播放。
-                  通常是片源读取慢;换个方式或稍等再试。
+                  分片生成速度只有实时速度的 {{ streamRate.toFixed(2) }} 倍,追不上播放。
                 </div>
                 <div class="cs-actions">
                   <button class="btn sm" @click="loadDecision('remux')">强制转封装</button>
@@ -3621,7 +3619,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div v-else-if="slowHint" class="cs-hint">
-                <div class="cs-hint-t">这个片源读取得慢,当前方式追不上播放速度。</div>
+                <div class="cs-hint-t">片源读取慢,当前方式追不上播放速度。</div>
                 <div class="cs-actions">
                   <button class="btn sm" @click="loadDecision('remux')">强制转封装</button>
                   <button class="btn sm" @click="loadDecision()">重试自动</button>
@@ -3696,7 +3694,7 @@ onBeforeUnmount(() => {
 
             <div v-else-if="activeTab === 'about'" class="wi-about">
               <p v-if="overview" class="wi-ov">{{ overview }}</p>
-              <p v-else class="tiny">这个条目还没有简介。</p>
+              <p v-else class="tiny">暂无简介。</p>
               <div v-if="infoGenres.length" class="wi-facts">
                 <span v-for="g in infoGenres" :key="g" class="chip sm">{{ g }}</span>
               </div>
@@ -3786,7 +3784,7 @@ onBeforeUnmount(() => {
                     @click="setSubtitleOutline(o.value)"
                   >{{ o.label }}</button>
                 </div>
-                <div class="tiny">只影响网页内绘制的字幕,不会改变烧录字幕。</div>
+                <div class="tiny">仅影响网页内绘制的字幕。</div>
               </div>
 
               <!-- Typesetting (ASS) tracks: WebVTT can only approximate where a
@@ -3839,7 +3837,7 @@ onBeforeUnmount(() => {
                     <AppIcon name="info" :size="14" /> 视频统计信息{{ statsOpen ? ' · 已开启' : '' }}
                   </button>
                 </div>
-                <div class="tiny">查看实际分辨率、编码、码率、缓冲与丢帧。</div>
+                <div class="tiny">分辨率 · 编码 · 码率 · 缓冲。</div>
               </div>
 
               <div v-if="play?.reason" class="pn-reason tiny">

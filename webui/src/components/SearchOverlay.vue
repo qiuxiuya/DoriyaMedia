@@ -289,7 +289,7 @@ function onKeydown(e) {
             <div v-else-if="q.trim() && !loading && !catalogLoading && !results.length && !catalog.length && !catalogWarning" class="none">
               <AppIcon name="search" :size="26" />
               <div class="t">没有找到「{{ q }}」</div>
-              <div class="tiny">媒体库里没有,B 站片库里也没有相近的番剧</div>
+              <div class="tiny">媒体库与 B 站片库均无结果</div>
             </div>
 
             <section v-for="group in groups" :key="group.key" class="result-group">
@@ -344,7 +344,7 @@ function onKeydown(e) {
             <div v-if="!q.trim() && !recents.length" class="none">
               <AppIcon name="sparkles" :size="26" />
               <div class="t">还没有内容</div>
-              <div class="tiny">先在设置里添加存储源与媒体库并扫描</div>
+              <div class="tiny">请先在设置里添加存储源与媒体库</div>
             </div>
           </div>
 

@@ -59,14 +59,14 @@ async function submit() {
       </template>
 
       <template v-else-if="!token">
-        <p class="small bad">这个链接里没有重置令牌,请从邮件里重新点一次,或在登录页重新申请。</p>
+        <p class="small bad">链接缺少重置令牌,请从邮件重新打开或重新申请。</p>
         <button type="button" class="btn lg block" @click="router.push('/login')">
           <AppIcon name="arrowLeft" :size="16" /> 返回登录
         </button>
       </template>
 
       <template v-else>
-        <p class="small">为安全起见,设置新密码后其他设备都会被退出登录。</p>
+        <p class="small">设置新密码后,其他设备会被退出登录。</p>
 
         <div class="field">
           <label for="rp-pw">新密码</label>

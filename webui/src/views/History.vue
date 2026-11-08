@@ -80,7 +80,7 @@ const empty = computed(() => !loading.value && !records.value.length)
       v-else-if="empty"
       icon="history"
       :title="tab === 'watched' ? '还没有看完的影片' : '还没有观看记录'"
-      :text="tab === 'watched' ? '把一部影片看完后，它就会出现在这里。' : '开始播放任意影片后，这里会记录你的进度。'"
+      :text="tab === 'watched' ? '看完一部影片后会出现在这里。' : '播放任意影片后这里会记录进度。'"
     >
       <router-link to="/" class="btn primary"><AppIcon name="play" :size="16" filled /> 去逛逛</router-link>
     </EmptyState>

@@ -88,7 +88,7 @@ function cold() {
 
   <PanelGroup title="编辑角色" icon="user" open>
     <PanelSegmented v-model="role" :options="roles" />
-    <p class="st-note">只编辑选中角色的菜单，不会切换当前登录身份。隐藏菜单不改变路由或 API 权限。</p>
+    <p class="st-note">只编辑选中角色的菜单,不改变权限。</p>
     <label v-if="role === 'admin'" class="st-switch">
       <input
         type="checkbox" :checked="rawOf(`header.roles.${role}.showManageLibraries`) !== false"
@@ -102,7 +102,7 @@ function cold() {
   </PanelGroup>
 
   <PanelGroup title="共享品牌" icon="globe" open>
-    <p class="st-note">品牌和默认文案由两个角色共享；单项文字留空时继承这里的文案。</p>
+    <p class="st-note">两个角色共享;单项留空时继承这里的文案。</p>
     <div class="st-pair">
       <PanelField k="header.brand.name" label="品牌 · 名称" />
       <PanelField k="header.brand.suffix" label="品牌 · 后缀(灰色部分)" />
@@ -113,9 +113,9 @@ function cold() {
     v-for="section in HEADER_SECTIONS" :key="`${role}-${section.id}`"
     :title="`${roleLabel} · ${section.label}`" :icon="section.id === 'account' ? 'user' : 'list'" open
   >
-    <p v-if="section.id === 'desktop'" class="st-note">媒体库下拉仅支持桌面导航；管理入口由管理员的独立开关控制。</p>
-    <p v-else-if="section.id === 'mobile'" class="st-note">手机底部标签独立排序；电影 / 剧集入口仅在对应媒体库存在时显示。</p>
-    <p v-if="!entries(section.id).length" class="st-note">还没有菜单项，可以添加一个新链接。</p>
+    <p v-if="section.id === 'desktop'" class="st-note">媒体库下拉仅用于桌面导航。</p>
+    <p v-else-if="section.id === 'mobile'" class="st-note">手机底部标签独立排序,电影 / 剧集入口需有对应媒体库。</p>
+    <p v-if="!entries(section.id).length" class="st-note">还没有菜单项。</p>
     <div
       v-for="(item, index) in entries(section.id)" :key="index" class="st-item"
       @mouseenter="hot(`${entryPath(section.id, index)}.label`)" @mouseleave="cold"
@@ -142,7 +142,7 @@ function cold() {
           class="st-input st-mono" :value="item.to" placeholder="/browse" :list="`st-header-routes-${role}`"
           @input="$event.target.setCustomValidity('')" @change="setTarget(section.id, index, $event)"
         />
-        <span class="st-hint">以 / 开头；不支持外部网址{{ role === 'user' ? '，普通用户不能添加管理页面入口' : '' }}。</span>
+        <span class="st-hint">以 / 开头,不支持外部网址{{ role === 'user' ? ';普通用户不能添加管理页入口' : '' }}。</span>
       </label>
       <label v-if="section.id !== 'desktop'" class="st-row">
         <span class="st-label">图标</span>

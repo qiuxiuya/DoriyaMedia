@@ -232,7 +232,7 @@ onMounted(load)
         </article>
       </div>
 
-      <EmptyState v-else-if="season" icon="tv" title="这一季还没有识别到剧集" text="扫描规则支持「第 1 季 / S01 / 纯数字」等目录结构,重新扫描试试。" />
+      <EmptyState v-else-if="season" icon="tv" title="这一季还没有识别到剧集" text="请检查目录结构是否为 第 1 季 / S01 之类,然后重新扫描。" />
     </div>
   </div>
 </template>
