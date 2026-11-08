@@ -60,7 +60,7 @@ func (s *Server) embyNextUp(w http.ResponseWriter, r *http.Request, u *models.Us
 			}
 			rows, err := s.Store.DB.Query(`WITH RECURSIVE descendants(id) AS (
     SELECT id FROM items WHERE parent_id=? UNION SELECT i.id FROM items i JOIN descendants d ON i.parent_id=d.id
-   ) SELECT i.id,COALESCE(MAX(CASE WHEN p.duration>0 AND p.position>=p.duration*0.9 THEN 1 ELSE 0 END),0),COALESCE(MAX(p.position),0)
+   ) SELECT i.id,COALESCE(MAX(CASE WHEN p.played=1 THEN 1 ELSE 0 END),0),COALESCE(MAX(p.position),0)
     FROM items i LEFT JOIN progress p ON p.item_id=i.id AND p.user_id=?
     WHERE i.id IN (SELECT id FROM descendants) AND i.type='episode'
     GROUP BY i.id ORDER BY i.season,i.episode,i.id`, show.ID, u.ID)
@@ -154,8 +154,17 @@ func (s *Server) embyPlayed(w http.ResponseWriter, r *http.Request, u *models.Us
 		fail(w, 400, "Only playable items can be marked watched")
 		return
 	}
+	// Marking watched is an explicit boolean write, exactly as Emby treats it:
+	// it does not need the media's duration, so it succeeds even for a file the
+	// server has never probed or played. The duration is only read to record a
+	// full position when one is already known, so the progress percentage reads
+	// as complete; a bare flag alone is a perfectly valid "watched".
+	//
+	// Unmarking keeps its original shape — the progress row is dropped — rather
+	// than lowering the flag in place: a row kept with position=duration would
+	// reappear as a bogus resume card. A bare "played=false" row has no position
+	// any client could resume from anyway.
 	played := r.Method == "POST"
-	marked := 0
 	for _, f := range files {
 		if !played {
 			if _, err := s.Store.DB.Exec("DELETE FROM progress WHERE user_id=? AND file_id=?", u.ID, f.ID); err != nil {
@@ -170,23 +179,13 @@ func (s *Server) embyPlayed(w http.ResponseWriter, r *http.Request, u *models.Us
 				duration = p.Duration
 			}
 		}
-		// Episodes that were never probed cannot be marked; a folder still
-		// succeeds as long as at least one episode could be.
-		if duration <= 0 {
-			continue
-		}
-		if err := s.Store.SaveProgress(&models.Progress{UserID: u.ID, FileID: f.ID, ItemID: f.ItemID, Position: duration, Duration: duration}); err != nil {
+		if err := s.Store.SetPlayed(&models.Progress{UserID: u.ID, FileID: f.ID, ItemID: f.ItemID, Position: duration, Duration: duration, Played: true}); err != nil {
 			fail(w, 500, "Cannot save watched state")
 			return
 		}
-		marked++
 		if s.BangumiSync != nil {
 			_ = s.BangumiSync.EnqueueWatched(u.ID, f.ID)
 		}
-	}
-	if played && marked == 0 {
-		fail(w, 409, "Play or probe the item before marking watched")
-		return
 	}
 	ud := s.embyItem(it, u, r)["UserData"].(map[string]any)
 	if folder {
@@ -255,14 +254,15 @@ func (s *Server) embyDescendantFiles(parentID int64, seen map[int64]bool, depth 
 }
 
 // embyFolderPlayed reports whether every episode file of a shown folder has
-// been watched by this user.
+// been watched by this user. It reads the explicit played flag, so a folder
+// marked watched from the client is played even before anything is probed.
 func (s *Server) embyFolderPlayed(userID int64, files []models.MediaFile) bool {
 	if len(files) == 0 {
 		return false
 	}
 	for _, f := range files {
 		p, err := s.Store.ProgressForFile(userID, f.ID)
-		if err != nil || p.Duration <= 0 || p.Position*10 < p.Duration*9 {
+		if err != nil || !p.Played {
 			return false
 		}
 	}

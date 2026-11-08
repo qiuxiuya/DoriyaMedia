@@ -234,6 +234,7 @@ func (s *Store) migrate() error {
 			item_id INTEGER NOT NULL,
 			position REAL NOT NULL DEFAULT 0,
 			duration REAL NOT NULL DEFAULT 0,
+			played INTEGER NOT NULL DEFAULT 0,
 			updated_at TIMESTAMP NOT NULL,
 			PRIMARY KEY (user_id, file_id)
 		)`,
@@ -297,7 +298,32 @@ func (s *Store) migrate() error {
 	if err := s.migrateLibraryExcludes(); err != nil {
 		return err
 	}
+	if err := s.migrateProgressPlayed(); err != nil {
+		return err
+	}
 	return s.migrateUsers()
+}
+
+// migrateProgressPlayed adds the explicit watched flag Emby semantics need: a
+// progress row previously expressed "watched" only through position/duration,
+// so an item marked watched never depended on a boolean. Backfill the new
+// column from that same 90% rule so existing installations keep their watched
+// history, then let the application maintain it from there.
+func (s *Store) migrateProgressPlayed() error {
+	has, err := s.hasColumn("progress", "played")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := s.DB.Exec(`ALTER TABLE progress ADD COLUMN played INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("progress.played: %w", err)
+		}
+		// Existing rows: mark the ones that already satisfy the completion rule.
+		if _, err := s.DB.Exec(`UPDATE progress SET played=1 WHERE duration>0 AND position>=duration*0.9`); err != nil {
+			return fmt.Errorf("progress.played backfill: %w", err)
+		}
+	}
+	return nil
 }
 
 // migrateLibrarySources records where every existing library scans. A library
@@ -2103,11 +2129,16 @@ func (s *Store) SubtitleByID(id int64) (*models.Subtitle, error) {
 // ---------- progress ----------
 
 func (s *Store) SaveProgress(p *models.Progress) error {
-	_, err := s.DB.Exec(`INSERT INTO progress (user_id, file_id, item_id, position, duration, updated_at)
-		VALUES (?,?,?,?,?,?)
+	// played is only ever raised here, never cleared: a periodic playback save
+	// (played=false) must not undo an explicit "mark watched". The ON CONFLICT
+	// arm keeps an already-watched row watched, while a save that crossed the
+	// completion threshold raises it. Clearing is SetPlayed's job.
+	_, err := s.DB.Exec(`INSERT INTO progress (user_id, file_id, item_id, position, duration, played, updated_at)
+		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(user_id, file_id) DO UPDATE SET position=excluded.position, duration=excluded.duration,
-		item_id=excluded.item_id, updated_at=excluded.updated_at`,
-		p.UserID, p.FileID, p.ItemID, p.Position, p.Duration, time.Now())
+		item_id=excluded.item_id, played=CASE WHEN excluded.played=1 THEN 1 ELSE progress.played END,
+		updated_at=excluded.updated_at`,
+		p.UserID, p.FileID, p.ItemID, p.Position, p.Duration, boolToInt(p.Played), time.Now())
 	if err != nil {
 		return err
 	}
@@ -2117,12 +2148,37 @@ func (s *Store) SaveProgress(p *models.Progress) error {
 	return err
 }
 
+// SetPlayed writes the explicit watched flag for one file without requiring a
+// known duration — that is the whole point of the field. It creates the row for
+// an item that was never played, so "mark watched" succeeds on a file the
+// server has not probed. When marking watched with a measured duration, the
+// position is moved to the end so a percentage reads as complete; an existing
+// resume position is otherwise preserved, and unmarking only lowers the flag.
+func (s *Store) SetPlayed(p *models.Progress) error {
+	_, err := s.DB.Exec(`INSERT INTO progress (user_id, file_id, item_id, position, duration, played, updated_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(user_id, file_id) DO UPDATE SET
+			played=excluded.played,
+			position=CASE WHEN excluded.played=1 AND excluded.duration>0 THEN excluded.duration ELSE progress.position END,
+			duration=CASE WHEN excluded.duration>0 THEN excluded.duration ELSE progress.duration END,
+			item_id=excluded.item_id,
+			updated_at=excluded.updated_at`,
+		p.UserID, p.FileID, p.ItemID, p.Position, p.Duration, boolToInt(p.Played), time.Now())
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(`DELETE FROM resume_hidden WHERE user_id=? AND item_id=?`, p.UserID, p.ItemID)
+	return err
+}
+
 func (s *Store) ProgressByUser(userID int64) ([]models.Progress, error) {
 	// Items the user removed from Continue Watching stay out of both the Emby
 	// resume row and the web home row. The progress row itself is untouched, so
 	// the position and watched state survive; resuming playback clears the flag.
-	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, updated_at
-		FROM progress p WHERE p.user_id=? AND p.position > 30
+	// An explicitly-watched row is not resumable even if it still carries a
+	// position, so marking something watched does not leave a resume card.
+	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
+		FROM progress p WHERE p.user_id=? AND p.position > 30 AND p.played=0
 		AND NOT EXISTS (SELECT 1 FROM resume_hidden h WHERE h.user_id=p.user_id AND h.item_id=p.item_id)
 		ORDER BY updated_at DESC LIMIT 50`, userID)
 	if err != nil {
@@ -2132,9 +2188,11 @@ func (s *Store) ProgressByUser(userID int64) ([]models.Progress, error) {
 	var out []models.Progress
 	for rows.Next() {
 		var p models.Progress
-		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &p.UpdatedAt); err != nil {
+		var played int
+		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &played, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.Played = played != 0
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -2143,11 +2201,12 @@ func (s *Store) ProgressByUser(userID int64) ([]models.Progress, error) {
 // HistoryByUser lists every item this viewer has touched, most recent first —
 // the "观看记录" list behind the profile menu. Unlike ProgressByUser it does not
 // hide items the viewer removed from Continue Watching, and it does not require
-// the position to be past the resume threshold: a record is a record. Rows still
-// need a real duration, which is what lets a percentage be shown at all.
+// the position to be past the resume threshold: a record is a record. An item
+// marked watched before it was ever played has no position, but the explicit
+// flag still makes it a record.
 func (s *Store) HistoryByUser(userID int64) ([]models.Progress, error) {
-	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, updated_at
-		FROM progress p WHERE p.user_id=? AND p.duration > 0 AND p.position > 0
+	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
+		FROM progress p WHERE p.user_id=? AND (p.position > 0 OR p.played=1)
 		ORDER BY updated_at DESC LIMIT 300`, userID)
 	if err != nil {
 		return nil, err
@@ -2156,21 +2215,23 @@ func (s *Store) HistoryByUser(userID int64) ([]models.Progress, error) {
 	var out []models.Progress
 	for rows.Next() {
 		var p models.Progress
-		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &p.UpdatedAt); err != nil {
+		var played int
+		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &played, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.Played = played != 0
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
-// WatchedByUser lists what a viewer has finished, most recent first. A file
-// counts as watched once the stored position reaches 90% of its duration — the
-// same threshold handleSaveProgress uses to mark something played, so the
-// "已观看" list and the payoff of finishing an episode agree on what counts.
+// WatchedByUser lists what a viewer has finished, most recent first. It reads
+// the explicit played flag: since playback past the 90% threshold — and Emby's
+// "mark watched" — both raise that flag, the "已观看" list stays in agreement
+// with what any client reports as played.
 func (s *Store) WatchedByUser(userID int64) ([]models.Progress, error) {
-	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, updated_at
-		FROM progress p WHERE p.user_id=? AND p.duration > 0 AND p.position >= p.duration*0.9
+	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
+		FROM progress p WHERE p.user_id=? AND p.played=1
 		ORDER BY updated_at DESC LIMIT 200`, userID)
 	if err != nil {
 		return nil, err
@@ -2179,9 +2240,11 @@ func (s *Store) WatchedByUser(userID int64) ([]models.Progress, error) {
 	var out []models.Progress
 	for rows.Next() {
 		var p models.Progress
-		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &p.UpdatedAt); err != nil {
+		var played int
+		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &played, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.Played = played != 0
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -2189,12 +2252,14 @@ func (s *Store) WatchedByUser(userID int64) ([]models.Progress, error) {
 
 func (s *Store) ProgressForFile(userID, fileID int64) (*models.Progress, error) {
 	p := &models.Progress{}
-	err := s.DB.QueryRow(`SELECT user_id, file_id, item_id, position, duration, updated_at
+	var played int
+	err := s.DB.QueryRow(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
 		FROM progress WHERE user_id=? AND file_id=?`, userID, fileID).
-		Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &p.UpdatedAt)
+		Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &played, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	p.Played = played != 0
 	return p, nil
 }
 
@@ -2523,7 +2588,7 @@ func (s *Store) RetryBangumiSyncJobs(userID int64, now time.Time) (int64, error)
 func (s *Store) CompletedProgressFiles(userID int64) ([]int64, error) {
 	rows, err := s.DB.Query(`SELECT p.file_id
 		FROM progress p
-		WHERE p.user_id=? AND p.duration>0 AND p.position>=p.duration*0.9
+		WHERE p.user_id=? AND p.played=1
 		ORDER BY p.updated_at DESC`, userID)
 	if err != nil {
 		return nil, err

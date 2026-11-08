@@ -232,11 +232,18 @@ type Subtitle struct {
 }
 
 type Progress struct {
-	UserID    int64     `json:"user_id"`
-	FileID    int64     `json:"file_id"`
-	ItemID    int64     `json:"item_id"`
-	Position  float64   `json:"position"`
-	Duration  float64   `json:"duration"`
+	UserID   int64   `json:"user_id"`
+	FileID   int64   `json:"file_id"`
+	ItemID   int64   `json:"item_id"`
+	Position float64 `json:"position"`
+	Duration float64 `json:"duration"`
+	// Played carries the explicit watched flag. Emby semantics treat "watched"
+	// as its own boolean rather than a position/duration ratio, so an item can
+	// be marked watched before it is ever probed and a resume position alone
+	// does not imply completion. handleSaveProgress still flips it automatically
+	// once playback passes the 90% threshold, so the web player keeps marking
+	// finished episodes without a separate API call.
+	Played    bool      `json:"played"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

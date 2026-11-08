@@ -912,8 +912,11 @@ func (s *Server) handleSaveProgress(w http.ResponseWriter, r *http.Request, user
 		fail(w, 404, "文件不存在")
 		return
 	}
+	// Crossing the 90% threshold raises the explicit played flag here, so the
+	// web player keeps marking finished episodes watched without a separate
+	// call — the same rule the client used to apply from the position alone.
 	watched := req.Position >= req.Duration*0.9
-	p := &models.Progress{UserID: user.ID, FileID: f.ID, ItemID: f.ItemID, Position: req.Position, Duration: req.Duration}
+	p := &models.Progress{UserID: user.ID, FileID: f.ID, ItemID: f.ItemID, Position: req.Position, Duration: req.Duration, Played: watched}
 	if err := s.Store.SaveProgress(p); err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -999,7 +1002,7 @@ func (s *Server) handleWatchHistory(w http.ResponseWriter, r *http.Request, user
 		}
 		list = append(list, record{
 			Item: *it, FileID: p.FileID, Position: p.Position, Duration: p.Duration,
-			Percent: pct, Watched: p.Duration > 0 && p.Position/p.Duration >= 0.9, UpdatedAt: p.UpdatedAt,
+			Percent: pct, Watched: p.Played, UpdatedAt: p.UpdatedAt,
 		})
 	}
 	writeJSON(w, 200, map[string]any{"records": list})

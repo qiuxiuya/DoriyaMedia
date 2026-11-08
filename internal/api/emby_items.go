@@ -179,7 +179,9 @@ func (s *Server) embyItem(it *models.Item, u *models.User, r *http.Request) map[
 			for i := range files {
 				sources = append(sources, s.embyMediaSource(&files[i], r))
 				if p, e := s.Store.ProgressForFile(u.ID, files[i].ID); e == nil {
-					played := p.Duration > 0 && p.Position/p.Duration >= 0.9
+					// Played is the explicit flag, not a position ratio: an item
+					// marked watched on a client reports played here immediately.
+					played := p.Played
 					count := 0
 					if played {
 						count = 1
@@ -395,7 +397,10 @@ func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User
 		where = append(where, "i.id IN ("+strings.Join(marks, ",")+")")
 	}
 	if strings.HasSuffix(r.URL.Path, "/resume") || strings.Contains(strings.ToLower(embyQuery(r, "Filters")), "isresumable") {
-		where = append(where, "EXISTS (SELECT 1 FROM progress p WHERE p.item_id=i.id AND p.user_id=? AND p.position>0 AND p.duration>0 AND p.position<p.duration*0.9)")
+		// Resumable means started (position>0) but not marked watched: a played
+		// flag outranks the position, so an item watched to the end is not a
+		// resume card even when it still carries its old position.
+		where = append(where, "EXISTS (SELECT 1 FROM progress p WHERE p.item_id=i.id AND p.user_id=? AND p.position>0 AND p.played=0)")
 		args = append(args, u.ID)
 		// HideFromResume removes a card from Continue Watching without touching
 		// the progress row, so the played state and position stay intact.
@@ -407,7 +412,7 @@ func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User
 		if strings.EqualFold(v, "false") {
 			prefix = "NOT "
 		}
-		where = append(where, prefix+"EXISTS (SELECT 1 FROM progress p WHERE p.item_id=i.id AND p.user_id=? AND p.duration>0 AND p.position>=p.duration*0.9)")
+		where = append(where, prefix+"EXISTS (SELECT 1 FROM progress p WHERE p.item_id=i.id AND p.user_id=? AND p.played=1)")
 		args = append(args, u.ID)
 	}
 	favoriteFilter := strings.ToLower(embyQuery(r, "IsFavorite"))
