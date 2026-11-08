@@ -810,21 +810,22 @@ func (m *Manager) enrichShow(ctx context.Context, drv source.Driver, lib *models
 	}
 	var filePath string
 	var epSource int64
+	haveFile := false
 	if len(files) > 0 {
-		filePath, epSource = files[0].Path, files[0].SourceID
+		filePath, epSource, haveFile = files[0].Path, files[0].SourceID, true
 	} else {
-		var ok bool
-		filePath, epSource, ok = m.firstEpisodeFile(show.ID)
-		if !ok {
-			return
-		}
+		filePath, epSource, haveFile = m.firstEpisodeFile(show.ID)
 	}
 	// The show's own files name the source to read its nfo and artwork from.
-	drv = m.metadataDriver(ctx, drv, epSource)
+	// Only the nfo provider needs one; when no episode file could be found the
+	// online providers still identify the show by name (see RefreshItem).
+	if haveFile {
+		drv = m.metadataDriver(ctx, drv, epSource)
+	}
 	for _, p := range providers(lib) {
 		switch p {
 		case "nfo":
-			if m.tryShowNFO(ctx, drv, show, filePath, epSource) {
+			if haveFile && m.tryShowNFO(ctx, drv, show, filePath, epSource) {
 				return
 			}
 		case "tmdb":
@@ -991,17 +992,26 @@ func (m *Manager) RefreshItem(itemID int64, tmdbID int) error {
 		}
 		it.TMDBID, it.BGMID, it.Overview, it.PosterPath, it.BackdropPath = 0, 0, "", "", ""
 		_ = m.Store.UpdateItemMeta(it)
+		// The episode file is what the local nfo provider reads — it needs a
+		// path to look for sidecars beside. The online providers do not: Bangumi
+		// and TMDB identify a show by its name (and the year on the item), so a
+		// show whose file could not be bound — a folder whose only video has no
+		// episode number, or a row a previous scan left behind — is still
+		// identifiable. Failing here instead returned "剧集下没有可用的剧集文件"
+		// for exactly the shows a user opens "重新识别" to repair.
 		filePath, epSource, ok := m.firstEpisodeFile(it.ID)
-		if !ok {
-			return fmt.Errorf("剧集下没有可用的剧集文件")
-		}
-		if d := m.driverFor(epSource); d != nil {
-			drv = d
+		if ok {
+			if d := m.driverFor(epSource); d != nil {
+				drv = d
+			}
 		}
 		for _, p := range providers(lib) {
 			switch p {
 			case "nfo":
-				if m.tryShowNFO(ctx, drv, it, filePath, epSource) {
+				// A sidecar lives beside a file; with no file there is nothing
+				// to read, and the provider is skipped rather than failing the
+				// whole refresh.
+				if ok && m.tryShowNFO(ctx, drv, it, filePath, epSource) {
 					return nil
 				}
 			case "bgm":
@@ -1933,16 +1943,43 @@ func isSharedTMDBImageName(name, kind string) bool {
 
 // ---------- helpers ----------
 
+// firstEpisodeFile returns one file to represent a show, for the providers that
+// need a path (only the local nfo reader). It walks the show's seasons and their
+// episodes, and also matches an episode parented straight to the show — a shape
+// an older import could leave behind — so a show that does hold playable files is
+// not wrongly reported as having none.
 func (m *Manager) firstEpisodeFile(showID int64) (string, int64, bool) {
-	seasons, _ := m.Store.ItemChildren(showID)
-	for _, s := range seasons {
-		eps, _ := m.Store.ItemChildren(s.ID)
-		for _, e := range eps {
-			fls, _ := m.Store.FilesByItem(e.ID)
-			if len(fls) > 0 {
+	kids, _ := m.Store.ItemChildren(showID)
+	for _, k := range kids {
+		switch k.Type {
+		case "episode":
+			if fls, err := m.Store.FilesByItem(k.ID); err == nil && len(fls) > 0 {
 				return fls[0].Path, fls[0].SourceID, true
 			}
+		case "season":
+			eps, _ := m.Store.ItemChildren(k.ID)
+			for _, e := range eps {
+				fls, _ := m.Store.FilesByItem(e.ID)
+				if len(fls) > 0 {
+					return fls[0].Path, fls[0].SourceID, true
+				}
+			}
 		}
+	}
+	// A direct query is the last resort: it reaches an episode that a hierarchy
+	// read missed (a type written wrong by an older scan, a season whose parent
+	// link is stale) as long as the row still names this show somewhere above it.
+	var path string
+	var srcID int64
+	err := m.Store.DB.QueryRow(`WITH RECURSIVE descendants(id) AS (
+			SELECT id FROM items WHERE parent_id=?
+			UNION SELECT i.id FROM items i JOIN descendants d ON i.parent_id=d.id
+		)
+		SELECT f.path, f.source_id FROM files f JOIN items i ON i.id=f.item_id
+		WHERE i.id IN (SELECT id FROM descendants) AND i.type='episode'
+		ORDER BY i.season, i.episode, i.id LIMIT 1`, showID).Scan(&path, &srcID)
+	if err == nil && path != "" {
+		return path, srcID, true
 	}
 	return "", 0, false
 }
