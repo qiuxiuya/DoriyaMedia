@@ -33,7 +33,7 @@ export const DEFAULTS = {
       manageLibraries: '管理媒体库',
       settings: '设置',
     },
-    account: { account: '账号设置', bangumi: 'Bangumi 追番', settings: '设置', logout: '退出登录' },
+    account: { account: '账号设置', bangumi: 'Bangumi 追番', history: '观看记录', settings: '设置', logout: '退出登录' },
     roles: createHeaderRoles(),
   },
 

@@ -955,6 +955,56 @@ func (s *Server) handleListProgress(w http.ResponseWriter, r *http.Request, user
 	writeJSON(w, 200, progs)
 }
 
+// handleWatchHistory backs the profile menu's "观看记录" page. One query answers
+// both tabs: kind=watched returns only finished items, anything else returns
+// every record — in-progress ones included — newest first.
+func (s *Server) handleWatchHistory(w http.ResponseWriter, r *http.Request, user *models.User) {
+	var progs []models.Progress
+	var err error
+	if strings.EqualFold(r.URL.Query().Get("kind"), "watched") {
+		progs, err = s.Store.WatchedByUser(user.ID)
+	} else {
+		progs, err = s.Store.HistoryByUser(user.ID)
+	}
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	type record struct {
+		Item      models.Item `json:"item"`
+		FileID    int64       `json:"file_id"`
+		Position  float64     `json:"position"`
+		Duration  float64     `json:"duration"`
+		Percent   float64     `json:"percent"`
+		Watched   bool        `json:"watched"`
+		UpdatedAt time.Time   `json:"updated_at"`
+	}
+	list := make([]record, 0, len(progs))
+	seen := map[int64]bool{}
+	for _, p := range progs {
+		// One card per item. The query is ordered newest-first, so the first row
+		// for an item is the one to keep — a re-watched film or a multi-part file
+		// must not fill the page with the same title.
+		if seen[p.ItemID] {
+			continue
+		}
+		it, err := s.Store.ItemByID(p.ItemID)
+		if err != nil {
+			continue
+		}
+		seen[p.ItemID] = true
+		pct := 0.0
+		if p.Duration > 0 {
+			pct = p.Position / p.Duration * 100
+		}
+		list = append(list, record{
+			Item: *it, FileID: p.FileID, Position: p.Position, Duration: p.Duration,
+			Percent: pct, Watched: p.Duration > 0 && p.Position/p.Duration >= 0.9, UpdatedAt: p.UpdatedAt,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"records": list})
+}
+
 // ---------- library cover ----------
 
 const maxLibraryPosterBytes = 8 << 20

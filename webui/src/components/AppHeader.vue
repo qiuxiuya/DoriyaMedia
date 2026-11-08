@@ -33,7 +33,28 @@ const menuItems = (section) => resolveHeaderItems(site.doc.header, section, isAd
   .map((item) => ({ ...item, label: fill(item.label, ctx) }))
 const nav = computed(() => menuItems('desktop'))
 const tabs = computed(() => menuItems('mobile'))
-const accountItems = computed(() => menuItems('account'))
+const accountItems = computed(() => {
+  const items = menuItems('account')
+  // A site document saved before 观看记录 existed has no entry for it, so every
+  // viewer's menu would silently lack the entry point. Top it up here, ahead of
+  // 退出登录, unless the owner already placed one (in the doc or by hand). New
+  // default documents already carry it, and the editor may reorder it freely.
+  if (items.some((i) => i.type === 'history')) return items
+  const history = {
+    key: 'account-history',
+    copyKey: 'header.account.history',
+    type: 'history',
+    label: fill(site.doc.header.account.history || '观看记录', ctx),
+    to: '/history',
+    action: '',
+    icon: 'history',
+    exact: false,
+  }
+  const at = items.findIndex((i) => i.type === 'logout')
+  const out = items.slice()
+  out.splice(at < 0 ? out.length : at, 0, history)
+  return out
+})
 const highlight = (item) => site.canEdit && toolbarOn.value && hoverKey.value === item.copyKey
 const showManageLibraries = computed(() => isAdmin.value && site.doc.header.roles.admin.showManageLibraries !== false)
 

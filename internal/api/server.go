@@ -328,6 +328,8 @@ func (s *Server) Handler() http.Handler {
 	// progress
 	mux.HandleFunc("POST /api/progress", s.requireAuth(s.handleSaveProgress))
 	mux.HandleFunc("GET /api/progress", s.requireAuth(s.handleListProgress))
+	// the profile menu's watch history: every record, or only finished ones
+	mux.HandleFunc("GET /api/history", s.requireAuth(s.handleWatchHistory))
 	mux.HandleFunc("GET /api/bangumi/account", s.requireAuth(s.handleBangumiAccount))
 	mux.HandleFunc("PUT /api/bangumi/account", s.requireAuth(s.handleBangumiConnect))
 	mux.HandleFunc("DELETE /api/bangumi/account", s.requireAuth(s.handleBangumiDisconnect))

@@ -2140,6 +2140,53 @@ func (s *Store) ProgressByUser(userID int64) ([]models.Progress, error) {
 	return out, rows.Err()
 }
 
+// HistoryByUser lists every item this viewer has touched, most recent first —
+// the "观看记录" list behind the profile menu. Unlike ProgressByUser it does not
+// hide items the viewer removed from Continue Watching, and it does not require
+// the position to be past the resume threshold: a record is a record. Rows still
+// need a real duration, which is what lets a percentage be shown at all.
+func (s *Store) HistoryByUser(userID int64) ([]models.Progress, error) {
+	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, updated_at
+		FROM progress p WHERE p.user_id=? AND p.duration > 0 AND p.position > 0
+		ORDER BY updated_at DESC LIMIT 300`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Progress
+	for rows.Next() {
+		var p models.Progress
+		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// WatchedByUser lists what a viewer has finished, most recent first. A file
+// counts as watched once the stored position reaches 90% of its duration — the
+// same threshold handleSaveProgress uses to mark something played, so the
+// "已观看" list and the payoff of finishing an episode agree on what counts.
+func (s *Store) WatchedByUser(userID int64) ([]models.Progress, error) {
+	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, updated_at
+		FROM progress p WHERE p.user_id=? AND p.duration > 0 AND p.position >= p.duration*0.9
+		ORDER BY updated_at DESC LIMIT 200`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Progress
+	for rows.Next() {
+		var p models.Progress
+		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ProgressForFile(userID, fileID int64) (*models.Progress, error) {
 	p := &models.Progress{}
 	err := s.DB.QueryRow(`SELECT user_id, file_id, item_id, position, duration, updated_at

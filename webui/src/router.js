@@ -18,6 +18,8 @@ const routes = [
   { path: '/import/:sourceId/:seasonId', component: () => import('./views/Import.vue'), meta: { title: '入库' } },
   { path: '/browse/:id?', component: () => import('./views/Browse.vue'), meta: { title: '文件' } },
   { path: '/play/:fileId', component: () => import('./views/Player.vue'), meta: { fullscreen: true, title: '播放' } },
+  // the profile menu's watch history: ?tab=watched shows only finished items
+  { path: '/history', component: () => import('./views/History.vue'), meta: { title: '观看记录' } },
   // admin: the settings backend is the admin's alone. The API already answers
   // 403 to everyone else; this keeps a viewer from landing on a page of failed
   // requests in the first place.
