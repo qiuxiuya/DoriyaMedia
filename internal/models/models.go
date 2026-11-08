@@ -186,19 +186,11 @@ type MediaFile struct {
 	AddedAt  time.Time `json:"added_at"`
 }
 
-// ScanIssue is one file or item a scan could not place. Two kinds are kept:
+// ScanIssue is one file or item a scan could not place:
 //
-//   - "mismatch": the file is a video, but this library's type cannot take it —
-//     a series library only imports files that name an episode, and a film
-//     library needs a title it can read out of the name. The file is left out
-//     of the shelf (and is still playable through the browser), so without a
-//     record of it nothing would say where it went.
-//   - "scrape": an organised item lacks metadata, has no associated media
-//     files, or failed a manual refresh. Detail distinguishes those causes;
-//     missing file associations do not establish a file-type mismatch.
-//
-// Scans replace their scope's rows. Manual identification reconciles only the
-// refreshed root's scrape issues, leaving unrelated and mismatch rows intact.
+//   - "mismatch": the file is a video this library's type cannot take.
+//   - "scrape": the item lacks metadata, has no media files, or failed a
+//     manual refresh; Detail distinguishes those causes.
 type ScanIssue struct {
 	ID        int64  `json:"id"`
 	LibraryID int64  `json:"library_id"`

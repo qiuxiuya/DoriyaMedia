@@ -66,14 +66,8 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A small pool rather than exactly one connection. WAL mode is what makes
-	// this safe — readers do not block the writer — and busy_timeout handles the
-	// one case that still contends (two writers). One connection was the earlier
-	// setting, and it is what a long library scan tripped over: after a walk that
-	// takes minutes, a read could fail with "unable to open database file" while
-	// every other query on the same handle still worked, which points at the pool
-	// rather than the file. With room to open a second connection, a statement
-	// that cannot get a usable one has another to try.
+	// WAL lets readers run alongside the writer; a small pool leaves a spare
+	// connection for a statement that cannot get the first.
 	db.SetMaxOpenConns(4)
 	s := &Store{DB: db}
 	if err := s.migrate(); err != nil {
@@ -304,11 +298,8 @@ func (s *Store) migrate() error {
 	return s.migrateUsers()
 }
 
-// migrateProgressPlayed adds the explicit watched flag Emby semantics need: a
-// progress row previously expressed "watched" only through position/duration,
-// so an item marked watched never depended on a boolean. Backfill the new
-// column from that same 90% rule so existing installations keep their watched
-// history, then let the application maintain it from there.
+// migrateProgressPlayed adds the explicit watched flag and backfills existing
+// rows from the 90% completion rule.
 func (s *Store) migrateProgressPlayed() error {
 	has, err := s.hasColumn("progress", "played")
 	if err != nil {
@@ -326,10 +317,8 @@ func (s *Store) migrateProgressPlayed() error {
 	return nil
 }
 
-// migrateLibrarySources records where every existing library scans. A library
-// from before multi-source support has exactly one place, named by its own
-// source_id/path; after this its library_sources row says the same thing, and
-// the scan reads the table instead of the column.
+// migrateLibrarySources records the single source of libraries created before
+// multi-source support.
 func (s *Store) migrateLibrarySources() error {
 	_, err := s.DB.Exec(`INSERT OR IGNORE INTO library_sources (library_id, source_id, path)
 		SELECT id, source_id, path FROM libraries WHERE source_id > 0 AND name NOT LIKE '__browse__%'`)
@@ -599,12 +588,8 @@ func (s *Store) rebuildBangumiSyncJobs() error {
 }
 
 // migrateUsers adds the columns a database from before multi-user support is
-// missing. Existing rows keep working: the single account such a database had
-// was created as an admin by the setup flow, so it stays an active admin.
-//
-// The email columns land empty, which is what exempts long-standing accounts
-// from the address check — an owner who turns verification on must not find
-// their own account locked out behind a mailbox it never had.
+// missing. The email columns land empty, which exempts existing accounts from
+// the address check.
 func (s *Store) migrateUsers() error {
 	cols := []struct{ name, ddl string }{
 		{"status", `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`},
@@ -620,10 +605,8 @@ func (s *Store) migrateUsers() error {
 	return nil
 }
 
-// migrateItemSourceTypes adds the column the UI badges read and fills it for
-// libraries that already have rows. A rescan would fill it too, but a badge
-// disappearing until the next scan is not a good first impression, and the
-// backfill is three UPDATEs per library.
+// migrateItemSourceTypes adds the source_type column and backfills existing
+// libraries so their badges do not disappear until the next scan.
 func (s *Store) migrateItemSourceTypes() error {
 	has, err := s.hasColumn("items", "source_type")
 	if err != nil {
@@ -660,12 +643,8 @@ func (s *Store) migrateItemSourceTypes() error {
 	return nil
 }
 
-// migrateLibraryExcludes adds the per-library exclusion lists. Libraries created
-// before them inherit the global lists, which is what the empty mode means — no
-// backfill needed, and a library the user already tuned keeps its behaviour.
-//
-// There are two lists: keywords matched against file names, and keywords matched
-// against folder names (an Extras or Sample directory, skipped whole).
+// migrateLibraryExcludes adds the per-library exclusion lists. The default
+// "inherit" mode means libraries created earlier keep the global lists.
 func (s *Store) migrateLibraryExcludes() error {
 	columns := []struct{ name, ddl string }{
 		{"exclude_mode", `ALTER TABLE libraries ADD COLUMN exclude_mode TEXT NOT NULL DEFAULT 'inherit'`},
@@ -681,17 +660,9 @@ func (s *Store) migrateLibraryExcludes() error {
 	return nil
 }
 
-// RefreshItemSourceTypes recomputes items.source_type for one library.
-//
-// The value is the source *type* every file of the item comes from — an
-// episode's own files, a season's episodes' files, a show's season episodes'
-// files. An item whose files span two kinds of source gets the empty string:
-// there is no single badge that is true for it, and the UI shows none.
-//
-// It runs after every organize pass, so a rescan after moving a show to the
-// bilibili source picks the badge up (and dropping the source drops it), and it
-// is also what the one-time migration calls for libraries that predate the
-// column.
+// RefreshItemSourceTypes recomputes items.source_type for one library. The
+// value is the source type shared by every file of the item; an item spanning
+// several source types gets "" and no badge.
 func (s *Store) RefreshItemSourceTypes(libraryID int64) error {
 	stmts := []string{
 		// Episodes and films hold the files themselves.
@@ -741,11 +712,8 @@ func (s *Store) addColumn(table, column, ddl string) error {
 	return nil
 }
 
-// migrateFilesUnique upgrades the files table to "one row per (source, path)".
-// The old schema was UNIQUE(item_id, source_id, path), which meant a rescan
-// could never re-parent a file (the parse fix would duplicate rows instead of
-// moving them) — so collapse duplicates, keeping the newest binding, then add
-// the unique index the new UpsertFile conflicts on.
+// migrateFilesUnique upgrades the files table to "one row per (source, path)",
+// collapsing duplicates onto the newest binding.
 func (s *Store) migrateFilesUnique() error {
 	if _, err := s.DB.Exec(`DELETE FROM files WHERE id NOT IN (SELECT MAX(id) FROM files GROUP BY source_id, path)`); err != nil {
 		return fmt.Errorf("dedupe files: %w", err)
@@ -786,8 +754,7 @@ func (s *Store) hasColumn(table, column string) (bool, error) {
 
 // ---------- users ----------
 
-// userCols is the column list every user query scans, in the order scanUser
-// reads them, so adding a column means touching those two places only.
+// userCols is the column list of every user query, in scanUser's order.
 const userCols = `id, name, pass_hash, salt, role, status, email, email_verified, created_at, last_login_at`
 
 func scanUser(row interface{ Scan(...any) error }) (*models.User, error) {
@@ -812,9 +779,7 @@ func (s *Store) UserCount() (int, error) {
 	return n, err
 }
 
-// ActiveAdminCount counts accounts that can still administer the server. A
-// disabled or pending admin does not count, which is what stops the last usable
-// admin from being demoted, disabled or deleted out from under the server.
+// ActiveAdminCount counts accounts that can still administer the server.
 func (s *Store) ActiveAdminCount() (int, error) {
 	var n int
 	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ? AND status = ?`,
@@ -870,8 +835,8 @@ func (s *Store) UserByName(name string) (*models.User, error) {
 	return scanUser(s.DB.QueryRow(`SELECT `+userCols+` FROM users WHERE name = ? COLLATE NOCASE`, name))
 }
 
-// UserByLogin finds the account behind a sign-in form or a "forgot password"
-// box, where the person may type either their name or their address.
+// UserByLogin finds an account by name or email, as typed on a sign-in or
+// password-reset form.
 func (s *Store) UserByLogin(nameOrEmail string) (*models.User, error) {
 	return scanUser(s.DB.QueryRow(
 		`SELECT `+userCols+` FROM users WHERE name = ? COLLATE NOCASE OR (email <> '' AND email = ? COLLATE NOCASE)`,
@@ -882,19 +847,15 @@ func (s *Store) UserByID(id int64) (*models.User, error) {
 	return scanUser(s.DB.QueryRow(`SELECT `+userCols+` FROM users WHERE id = ?`, id))
 }
 
-// NameTaken reports whether another account already uses that name, so the API
-// can answer with a readable message instead of the UNIQUE constraint's text.
-// exceptID is the account being edited (0 when creating a new one). It is
-// case-insensitive for the same reason as UserByName.
+// NameTaken reports whether another account uses that name, ignoring exceptID
+// (the account being edited, 0 when creating one).
 func (s *Store) NameTaken(name string, exceptID int64) (bool, error) {
 	var n int
 	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE name = ? COLLATE NOCASE AND id <> ?`, name, exceptID).Scan(&n)
 	return n > 0, err
 }
 
-// EmailTaken reports whether another account already claims that address. An
-// address identifies a person for password resets, so two accounts must not
-// share one.
+// EmailTaken reports whether another account claims that address.
 func (s *Store) EmailTaken(email string, exceptID int64) (bool, error) {
 	var n int
 	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE email <> '' AND email = ? COLLATE NOCASE AND id <> ?`,
@@ -927,9 +888,7 @@ func (s *Store) TouchLastLogin(id int64, t time.Time) error {
 	return err
 }
 
-// SetUserEmail stores an address and whether it has been proven. Changing the
-// address clears the flag unless the caller explicitly vouches for it (an admin
-// marking an account verified, or a completed verification link).
+// SetUserEmail stores an address and its verified flag.
 func (s *Store) SetUserEmail(id int64, email string, verified bool) error {
 	_, err := s.DB.Exec(`UPDATE users SET email = ?, email_verified = ? WHERE id = ?`,
 		email, boolToInt(verified), id)
@@ -938,16 +897,14 @@ func (s *Store) SetUserEmail(id int64, email string, verified bool) error {
 
 // ---------- one-shot auth tokens ----------
 
-// Auth token kinds. Each account keeps at most one token per kind, so asking
-// for a new link invalidates the previous one.
+// Auth token kinds. Each account keeps at most one token per kind.
 const (
 	TokenVerifyEmail   = "verify"
 	TokenResetPassword = "reset"
 )
 
-// CreateAuthToken issues token, replacing any outstanding one of the same kind
-// for that user. Returning the old link useless is the point: a mailbox full of
-// half-used links should not be a set of live keys.
+// CreateAuthToken issues token, replacing any outstanding token of the same
+// kind for that user.
 func (s *Store) CreateAuthToken(token string, userID int64, kind string, expires time.Time) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -964,8 +921,7 @@ func (s *Store) CreateAuthToken(token string, userID int64, kind string, expires
 	return tx.Commit()
 }
 
-// AuthTokenUserID resolves a token of the given kind, without judging whether
-// it has expired — the caller decides what to tell the user.
+// AuthTokenUserID resolves a token without judging whether it has expired.
 func (s *Store) AuthTokenUserID(token, kind string) (int64, time.Time, error) {
 	var userID int64
 	var expires time.Time
@@ -979,8 +935,7 @@ func (s *Store) DeleteAuthToken(token string) error {
 	return err
 }
 
-// DeleteAuthTokens drops a user's outstanding tokens, used after a reset so the
-// link that was just followed cannot be replayed.
+// DeleteAuthTokens drops a user's outstanding tokens of one kind.
 func (s *Store) DeleteAuthTokens(userID int64, kind string) error {
 	_, err := s.DB.Exec(`DELETE FROM auth_tokens WHERE user_id = ? AND kind = ?`, userID, kind)
 	return err
@@ -992,9 +947,8 @@ func (s *Store) PruneAuthTokens() error {
 	return err
 }
 
-// DeleteUser removes the account, its sessions (via the foreign key cascade) and
-// its playback progress. Progress has no foreign key to users, so rows would
-// otherwise survive and attach themselves to whatever account reuses the id.
+// DeleteUser removes the account, its sessions and its playback progress.
+// Progress has no foreign key to users, so it has to be deleted explicitly.
 func (s *Store) DeleteUser(id int64) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -1013,8 +967,8 @@ func (s *Store) DeleteUser(id int64) error {
 	return tx.Commit()
 }
 
-// DeleteUserSessions signs every device of one account out, without touching
-// the account itself. excludeToken keeps the caller's own session alive.
+// DeleteUserSessions signs every device of one account out, keeping the
+// caller's own session when excludeToken is set.
 func (s *Store) DeleteUserSessions(userID int64, excludeToken string) error {
 	if excludeToken != "" {
 		_, err := s.DB.Exec(`DELETE FROM sessions WHERE user_id = ? AND token <> ?`, userID, excludeToken)
@@ -1024,8 +978,7 @@ func (s *Store) DeleteUserSessions(userID int64, excludeToken string) error {
 	return err
 }
 
-// PruneSessions drops sessions that have already expired, so the table does not
-// grow for the lifetime of the server.
+// PruneSessions drops sessions that have already expired.
 func (s *Store) PruneSessions() error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now())
 	return err
@@ -1122,9 +1075,7 @@ func (s *Store) Sources() ([]models.Source, error) {
 
 // ---------- libraries ----------
 
-// orExcludeMode keeps the column honest: only "custom" takes a library off the
-// global list, and anything else is stored as "inherit" so a row's meaning never
-// depends on which caller wrote it.
+// orExcludeMode stores anything other than "custom" as "inherit".
 func orExcludeMode(mode string) string {
 	if mode == "custom" {
 		return "custom"
@@ -1132,8 +1083,7 @@ func orExcludeMode(mode string) string {
 	return "inherit"
 }
 
-// orExcludes stores an empty list rather than an empty string: the column holds
-// json, and "" would read back as a list nobody can parse.
+// orExcludes stores "[]" instead of an empty string, which is not valid json.
 func orExcludes(list string) string {
 	if strings.TrimSpace(list) == "" {
 		return "[]"
@@ -1141,12 +1091,8 @@ func orExcludes(list string) string {
 	return list
 }
 
-// CreateLibrary inserts a library, and records where it scans. The first source
-// is the library's own source_id/path, which is what every older caller reads.
+// CreateLibrary inserts a library and records its first source.
 func (s *Store) CreateLibrary(lib *models.Library) error {
-	// Write the normalised values back onto the struct: the caller answers the
-	// request from it, and a library handed out saying mode "" would behave as
-	// "inherit" while claiming to have no opinion.
 	lib.ExcludeMode, lib.Excludes = orExcludeMode(lib.ExcludeMode), orExcludes(lib.Excludes)
 	lib.ExcludeFolderMode, lib.ExcludeFolders = orExcludeMode(lib.ExcludeFolderMode), orExcludes(lib.ExcludeFolders)
 	if lib.PosterMode != "static" {
@@ -1181,9 +1127,7 @@ func (s *Store) UpdateLibrary(lib *models.Library) error {
 	return err
 }
 
-// LibrarySources returns the places a library scans, in the order they were
-// added. A library from before this existed has its single source_id/path
-// recorded by the migration, so this is never empty for a usable library.
+// LibrarySources returns the places a library scans, in the order added.
 func (s *Store) LibrarySources(libraryID int64) ([]models.LibrarySource, error) {
 	rows, err := s.DB.Query(`SELECT library_id, source_id, path FROM library_sources
 		WHERE library_id=? ORDER BY rowid`, libraryID)
@@ -1202,9 +1146,8 @@ func (s *Store) LibrarySources(libraryID int64) ([]models.LibrarySource, error) 
 	return out, rows.Err()
 }
 
-// SetLibrarySources replaces a library's sources in one transaction, and keeps
-// the library's own source_id/path pointing at the first of them — that pair is
-// what a stale client, the home page and the browse scratchpad still read.
+// SetLibrarySources replaces a library's sources in one transaction and points
+// the library's own source_id/path at the first of them.
 func (s *Store) SetLibrarySources(libraryID int64, list []models.LibrarySource) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -1240,7 +1183,7 @@ func (s *Store) SetLibrarySources(libraryID int64, list []models.LibrarySource) 
 	return tx.Commit()
 }
 
-// attachSources fills in Library.Sources for a set of libraries with one query.
+// attachSources fills in Library.Sources with one query.
 func (s *Store) attachSources(libs []models.Library) {
 	if len(libs) == 0 {
 		return
@@ -1274,20 +1217,16 @@ func (s *Store) DeleteLibrary(id int64) error {
 	return err
 }
 
-// LibraryArtwork returns the cached image filename to show for a library card.
-// Libraries have no artwork of their own, so it borrows the newest item's
-// poster (or backdrop): real art from this library, not a generated image.
+// LibraryArtwork returns the cover to show for a library card: a pinned file
+// when one is set, otherwise the newest item artwork.
 func (s *Store) LibraryArtwork(lib *models.Library, kind string) (string, error) {
-	// A library set to a fixed cover keeps it; "auto" (and backdrops, which have
-	// no picker) borrow the newest cached artwork from the library's own items.
 	if kind == "primary" && lib.PosterMode == "static" && lib.PosterPath != "" {
 		return lib.PosterPath, nil
 	}
 	return s.LibraryAutoArtwork(lib.ID, kind)
 }
 
-// LibraryAutoArtwork is the newest item artwork in the library: what "自动获取"
-// pins when the user asks for a cover without picking a file.
+// LibraryAutoArtwork returns the newest item artwork in the library.
 func (s *Store) LibraryAutoArtwork(libraryID int64, kind string) (string, error) {
 	column := "poster_path"
 	if kind == "backdrop" {
@@ -1309,7 +1248,7 @@ func (s *Store) SetLibraryPoster(libraryID int64, mode, name string) error {
 	return err
 }
 
-// libraryCols and scanLibrary keep the two shapes in step as columns are added.
+// libraryCols is the column list of every library query, in scanLibrary's order.
 const libraryCols = `id, name, type, source_id, path, providers, exclude_mode, excludes, exclude_folder_mode, exclude_folders, created_at, poster_mode, poster_path`
 
 func scanLibrary(scan func(...any) error, lib *models.Library) error {
@@ -1330,8 +1269,8 @@ func (s *Store) LibraryByID(id int64) (*models.Library, error) {
 	return lib, nil
 }
 
-// EnsureBrowseLibrary returns the hidden scratchpad library used by the file
-// browser (one per source). Items played directly from the browser land here.
+// EnsureBrowseLibrary returns the hidden per-source library used by the file
+// browser, creating it on first use.
 func (s *Store) EnsureBrowseLibrary(sourceID int64) (*models.Library, error) {
 	name := fmt.Sprintf("__browse__-%d", sourceID)
 	lib := &models.Library{}
@@ -1391,32 +1330,20 @@ func (s *Store) UpdateItemMeta(it *models.Item) error {
 	return err
 }
 
-func (s *Store) DeleteItem(id int64) error {
-	_, err := s.DB.Exec(`DELETE FROM items WHERE id=?`, id)
-	return err
-}
-
-// itemCols is the column list every item query scans, in the order scanItems
-// reads it. Adding an item field means this line, scanItems and any per-row
-// reader (ItemByID) — not five nearly identical SELECTs.
+// itemCols is the column list of every item query, in itemDestinations' order.
 const itemCols = `id, library_id, type, parent_id, name, original_title, year, tmdb_id, bgm_id, overview,
 	poster_path, backdrop_path, still_path, rating, genres, season, episode, air_date, source_type, added_at`
 
 func (s *Store) ItemByID(id int64) (*models.Item, error) {
-	it := &models.Item{}
-	err := s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE id=?`, id).
-		Scan(&it.ID, &it.LibraryID, &it.Type, &it.ParentID, &it.Name, &it.OriginalTitle, &it.Year, &it.TMDBID, &it.BGMID,
-			&it.Overview, &it.PosterPath, &it.BackdropPath, &it.StillPath, &it.Rating, &it.Genres,
-			&it.Season, &it.Episode, &it.AirDate, &it.SourceType, &it.AddedAt)
-	if err != nil {
+	it, dest := itemDestinations()
+	if err := s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE id=?`, id).Scan(dest...); err != nil {
 		return nil, err
 	}
 	return it, nil
 }
 
-// ItemIDsByBGMIDs resolves one page of Bangumi subject IDs to local items in a
-// single query. When metadata produced more than one row for the same subject,
-// the title-level row wins because that is the one a detail page can present.
+// ItemIDsByBGMIDs resolves Bangumi subject IDs to local items, preferring the
+// title-level row when a subject has several.
 func (s *Store) ItemIDsByBGMIDs(ids []int) (map[int]int64, error) {
 	out := make(map[int]int64)
 	seen := make(map[int]struct{}, len(ids))
@@ -1471,11 +1398,8 @@ func (s *Store) ItemChildren(parentID int64) ([]models.Item, error) {
 	return scanItems(rows)
 }
 
-// ItemsByLibrary lists a library's items. rootsOnly keeps the shelf to what a
-// library actually shows — films and series — and leaves seasons and episodes to
-// the pages that drill into them. Without it a series library lists every episode
-// it holds by added_at, so a freshly scanned library opens on a wall of episodes
-// with its series buried behind them.
+// ItemsByLibrary lists a library's items. rootsOnly keeps the shelf to films and
+// series, leaving seasons and episodes to the pages that drill into them.
 func (s *Store) ItemsByLibrary(libraryID int64, typ string, search string, sort string, rootsOnly bool, offset, limit int) ([]models.Item, int, error) {
 	where := []string{"library_id = ?"}
 	args := []any{libraryID}
@@ -1514,7 +1438,6 @@ func (s *Store) ItemsByLibrary(libraryID int64, typ string, search string, sort 
 }
 
 func (s *Store) RecentItems(typ string, limit int) ([]models.Item, error) {
-	// exclude the hidden file-browser scratchpad libraries from home rows
 	rows, err := s.DB.Query(`SELECT `+itemCols+`
 		FROM items WHERE type=? AND library_id NOT IN (SELECT id FROM libraries WHERE name LIKE '__browse__%')
 		ORDER BY added_at DESC LIMIT ?`, typ, limit)
@@ -1525,29 +1448,12 @@ func (s *Store) RecentItems(typ string, limit int) ([]models.Item, error) {
 	return scanItems(rows)
 }
 
-// CountItems totals one item type across all visible libraries (home "查看全部").
+// CountItems totals one item type across all visible libraries.
 func (s *Store) CountItems(typ string) (int64, error) {
 	var n int64
 	err := s.DB.QueryRow(`SELECT COUNT(*) FROM items
 		WHERE type=? AND library_id NOT IN (SELECT id FROM libraries WHERE name LIKE '__browse__%')`, typ).Scan(&n)
 	return n, err
-}
-
-// ItemsNeedingIdent returns items of given types without tmdb id and without custom names,
-// used by the metadata enricher.
-func (s *Store) ItemsNeedingIdent(types []string) ([]models.Item, error) {
-	q := `SELECT ` + itemCols + `
-		FROM items WHERE tmdb_id = 0 AND bgm_id = 0 AND overview = '' AND type IN (` + placeholders(len(types)) + `)`
-	args := make([]any, 0, len(types))
-	for _, t := range types {
-		args = append(args, t)
-	}
-	rows, err := s.DB.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanItems(rows)
 }
 
 func placeholders(n int) string {
@@ -1557,13 +1463,11 @@ func placeholders(n int) string {
 func scanItems(rows *sql.Rows) ([]models.Item, error) {
 	var out []models.Item
 	for rows.Next() {
-		var it models.Item
-		if err := rows.Scan(&it.ID, &it.LibraryID, &it.Type, &it.ParentID, &it.Name, &it.OriginalTitle, &it.Year,
-			&it.TMDBID, &it.BGMID, &it.Overview, &it.PosterPath, &it.BackdropPath, &it.StillPath, &it.Rating, &it.Genres,
-			&it.Season, &it.Episode, &it.AirDate, &it.SourceType, &it.AddedAt); err != nil {
+		it, dest := itemDestinations()
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
-		out = append(out, it)
+		out = append(out, *it)
 	}
 	return out, rows.Err()
 }
@@ -1571,15 +1475,8 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 // ---------- transient-failure retry ----------
 
 // retryAttempts and retryBackoff bound the retry of a statement that failed for
-// a reason that is not about the statement.
-//
-// A library scan issues thousands of writes over tens of minutes against a
-// database file that a virus scanner, a backup agent or the filesystem itself
-// can interfere with for a moment. SQLite reports that as "unable to open
-// database file" — the same code it uses when it cannot create one of its own
-// temporary files — and one such hiccup used to abort the whole scan, throwing
-// away everything it had organized so far. A single retry after a short pause
-// rides it out, and a genuine failure still surfaces on the last attempt.
+// a reason that is not about the statement: a momentary filesystem or locking
+// hiccup must not abort a whole library scan.
 const (
 	retryAttempts = 4
 	retryBackoff  = 150 * time.Millisecond
@@ -1634,25 +1531,9 @@ func (s *Store) execRetryResult(query string, args ...any) (sql.Result, error) {
 	return nil, err
 }
 
-// queryItems runs a multi-row read, with a fallback for a failure observed in
-// this deployment that the statement and the file cannot explain.
-//
-// The symptom: after a library scan's walk spends minutes listing directories,
-// the organizer's next large multi-row read fails with SQLite's "unable to open
-// database file" (SQLITE_CANTOPEN), and the whole organize phase is discarded.
-// Everything that would normally explain that code was ruled out by measurement
-// inside the failing process — the database opens, integrity-checks and accepts
-// writes from a fresh process; the same file answers COUNT(*) on the very same
-// connection at the very same moment; the statement, its parameters, the pool
-// (1 open, 0 waiting), the temp directory and the disk are all fine; and the
-// identical statement run through QueryRow on that same connection succeeds.
-//
-// So the fallback is the one thing measured to work: when Query fails this way,
-// read the same rows through QueryRow instead. It is deliberately not a retry —
-// repeating the call on the same connection fails identically, which is why
-// retrying changed nothing. QueryRow taking a different path through the driver
-// is the difference, and it is enough to carry the scan past a step that was
-// otherwise fatal.
+// queryItems reads multiple rows. If the driver reports a transient failure,
+// the same rows are read through QueryRow, which takes a different path through
+// the driver and rides out the hiccup.
 func (s *Store) queryItems(query string, args ...any) ([]models.Item, error) {
 	rows, err := s.DB.Query(query, args...)
 	if err == nil {
@@ -1666,8 +1547,6 @@ func (s *Store) queryItems(query string, args ...any) ([]models.Item, error) {
 	return s.itemsViaQueryRow(query, args...)
 }
 
-// itemsViaQueryRow reads a query one row at a time through QueryRow. Same
-// columns, same scanning, different driver path — which is the whole point.
 func (s *Store) itemsViaQueryRow(query string, args ...any) ([]models.Item, error) {
 	var out []models.Item
 	for {
@@ -1683,23 +1562,22 @@ func (s *Store) itemsViaQueryRow(query string, args ...any) ([]models.Item, erro
 	}
 }
 
-// itemDestinations builds one models.Item plus the scan targets that fill it, in
-// the column order every items SELECT in this file uses.
+// itemDestinations returns a scan target in the column order of itemCols.
 func itemDestinations() (*models.Item, []any) {
 	it := &models.Item{}
 	dest := []any{
 		&it.ID, &it.LibraryID, &it.Type, &it.ParentID, &it.Name, &it.OriginalTitle,
 		&it.Year, &it.TMDBID, &it.BGMID, &it.Overview, &it.PosterPath, &it.BackdropPath,
-		&it.StillPath, &it.Rating, &it.Genres, &it.Season, &it.Episode, &it.AirDate, &it.AddedAt,
+		&it.StillPath, &it.Rating, &it.Genres, &it.Season, &it.Episode, &it.AirDate,
+		&it.SourceType, &it.AddedAt,
 	}
 	return it, dest
 }
 
 // ---------- files ----------
 
-// UpsertFile stores a file and (re)binds it to its current item: a rescan that
-// changes how a path is grouped moves the row instead of duplicating it.
-// An empty probe never overwrites a stored probe result.
+// UpsertFile stores a file and rebinds it to its current item. An empty probe
+// never overwrites a stored probe result.
 func (s *Store) UpsertFile(f *models.MediaFile) (id int64, err error) {
 	err = s.execRetry(`INSERT INTO files (item_id, source_id, path, size, mtime, probe, added_at)
 		VALUES (?,?,?,?,?,?,?)
@@ -1728,9 +1606,7 @@ func (s *Store) FileByID(id int64) (*models.MediaFile, error) {
 	return f, nil
 }
 
-// FileBySourcePath finds a file by its driver path regardless of which item
-// owns it — used so the file browser plays an already-scanned file instead of
-// re-binding it to a browse scratchpad item.
+// FileBySourcePath finds a file by source and path, whichever item owns it.
 func (s *Store) FileBySourcePath(sourceID int64, path string) (*models.MediaFile, error) {
 	f := &models.MediaFile{}
 	err := s.DB.QueryRow(`SELECT id, item_id, source_id, path, size, mtime, probe, added_at
@@ -1742,7 +1618,7 @@ func (s *Store) FileBySourcePath(sourceID int64, path string) (*models.MediaFile
 	return f, nil
 }
 
-// FileByPath finds an existing file row (within one library) by its driver path.
+// FileByPath finds a file row within one library by its path.
 func (s *Store) FileByPath(libraryID int64, path string) (*models.MediaFile, error) {
 	f := &models.MediaFile{}
 	err := s.DB.QueryRow(`SELECT f.id, f.item_id, f.source_id, f.path, f.size, f.mtime, f.probe, f.added_at
@@ -1771,8 +1647,7 @@ func (s *Store) FilesByItem(itemID int64) ([]models.MediaFile, error) {
 	return out, rows.Err()
 }
 
-// FileState is what a stored file row remembers about the file on the source:
-// enough to tell "the same file, untouched" from "a new or replaced one".
+// FileState is what a stored file row remembers about the file on the source.
 type FileState struct {
 	FileID int64
 	ItemID int64
@@ -1780,14 +1655,8 @@ type FileState struct {
 	MTime  int64
 }
 
-// FileStates indexes every stored file of a library by source and path.
-//
-// A rescan walks the whole source again, but almost every file it meets is one
-// it organized last time. Writing those rows again costs two round-trips each
-// and changes nothing. Comparing them against this index is what lets the
-// organizer skip that work, so a second scan only writes what actually moved,
-// grew, or was replaced. The key is the one the scanner itself uses for a file
-// ("<sourceID>|<path>"), so a lookup is a map hit.
+// FileStates indexes a library's stored files by "<sourceID>|<path>", letting a
+// rescan skip files that are unchanged.
 func (s *Store) FileStates(libraryID int64) (map[string]FileState, error) {
 	rows, err := s.DB.Query(`SELECT f.id, f.item_id, f.source_id, f.path, f.size, f.mtime
 		FROM files f JOIN items i ON i.id = f.item_id
@@ -1809,18 +1678,12 @@ func (s *Store) FileStates(libraryID int64) (map[string]FileState, error) {
 	return out, rows.Err()
 }
 
-// FileShowIndex maps every episode file of a library to the show it currently
-// belongs to, keyed by source and path. A scan uses it to recognise a file it
-// has already organized: a show's name can be overwritten by a metadata
-// provider between two scans (「装甲重拳 MEGALOBOX」 → 「MEGALO BOX」), and a
-// scanner that matched shows by name alone then created a second show for the
-// same folder on every scan. The file's own path is the stable identity.
+// FileShowIndex maps every episode file to the show it belongs to, keyed by
+// source and path: a provider can rename a show between scans, so the file path
+// is the stable identity a rescan uses to recognise it.
 //
-// split marks a show whose files do not all sit under one source folder. Such a
-// show is the product of an older, wrong grouping (bilibili's `TV [season N]`
-// folders once made every single-season series one "TV" show); it must not be
-// used as an anchor, or the rescan would preserve the wrong grouping instead of
-// repairing it.
+// split marks shows whose files do not all sit under one source folder, the
+// product of an older wrong grouping; those must not be used as anchors.
 func (s *Store) FileShowIndex(libraryID int64) (byFile map[string]int64, split map[int64]bool, err error) {
 	rows, err := s.DB.Query(`SELECT f.source_id, f.path, sh.id
 		FROM files f
@@ -1864,9 +1727,8 @@ func firstPathSegment(path string) string {
 	return p
 }
 
-// ScrapeIssues reports unidentified roots and roots without associated media
-// files. Starting from items keeps empty shows visible in the diagnostics.
-// A path scan reports only items reachable from files inside its own scope.
+// ScrapeIssues reports unidentified roots and roots without media files. A path
+// scan reports only items reachable from files inside its own scope.
 func (s *Store) ScrapeIssues(libraryID, sourceID int64, path string) ([]models.ScanIssue, error) {
 	return s.scrapeIssues(libraryID, sourceID, path, 0)
 }
@@ -1946,9 +1808,8 @@ func (s *Store) UpdateFileProbe(id int64, probe string) error {
 	return err
 }
 
-// FilesWithoutProbe returns playable files of a library that have no cached
-// probe yet, newest first. Used to warm the probe cache after a scan so the
-// first play of a file does not pay the (slow) probe. limit <= 0 means no limit.
+// FilesWithoutProbe returns a library's files that have no cached probe yet,
+// newest first. limit <= 0 means no limit.
 func (s *Store) FilesWithoutProbe(libraryID int64, limit int) ([]*models.MediaFile, error) {
 	q := `SELECT f.id, f.item_id, f.source_id, f.path, f.size, f.mtime, f.added_at
 		FROM files f JOIN items i ON i.id = f.item_id
@@ -1977,8 +1838,8 @@ func (s *Store) FilesWithoutProbe(libraryID int64, limit int) ([]*models.MediaFi
 
 // ---------- scan issues ----------
 
-// SyncItemScrapeIssue updates only one refreshed root's diagnostic. A manual
-// refresh must not erase other items' errors or file-level type mismatches.
+// SyncItemScrapeIssue updates only one root's diagnostic, leaving other items'
+// issues untouched.
 func (s *Store) SyncItemScrapeIssue(itemID int64, failure string) error {
 	it, err := s.ItemByID(itemID)
 	if err != nil {
@@ -2020,11 +1881,8 @@ func (s *Store) SyncItemScrapeIssue(itemID int64, failure string) error {
 	return tx.Commit()
 }
 
-// ReplaceScanIssues swaps a library's issue list for the one a scan just
-// produced. Manual refresh also updates its own item via SyncItemScrapeIssue;
-// keeping old rows would leave issues for files that have since been fixed.
-// scoped keeps only the rows outside a path scan's subtree: a partial scan
-// cannot speak for the rest of the library.
+// ReplaceScanIssues swaps a library's issue list for the one a scan produced.
+// A path scan replaces only rows inside its own subtree.
 func (s *Store) ReplaceScanIssues(libraryID int64, issues []models.ScanIssue, scopeSourceID int64, scopePath string) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -2060,9 +1918,8 @@ func (s *Store) ReplaceScanIssues(libraryID int64, issues []models.ScanIssue, sc
 	return tx.Commit()
 }
 
-// ScanIssues lists a library's outstanding problems, mismatches first (they are
-// files the user cannot see at all) and then by path so the list reads like a
-// directory.
+// ScanIssues lists a library's outstanding problems, mismatches first, then by
+// path.
 func (s *Store) ScanIssues(libraryID int64, kind string) ([]models.ScanIssue, error) {
 	q := `SELECT id, library_id, kind, source_id, path, item_id, name, detail, created_at
 		FROM scan_issues WHERE library_id = ?`
@@ -2089,32 +1946,6 @@ func (s *Store) ScanIssues(libraryID int64, kind string) ([]models.ScanIssue, er
 	return out, rows.Err()
 }
 
-func (s *Store) DeleteFilesNotIn(itemID int64, keep map[string]bool) error {
-	rows, err := s.DB.Query(`SELECT id, path FROM files WHERE item_id=?`, itemID)
-	if err != nil {
-		return err
-	}
-	var toDelete []int64
-	for rows.Next() {
-		var id int64
-		var p string
-		if err := rows.Scan(&id, &p); err != nil {
-			rows.Close()
-			return err
-		}
-		if !keep[p] {
-			toDelete = append(toDelete, id)
-		}
-	}
-	rows.Close()
-	for _, id := range toDelete {
-		if _, err := s.DB.Exec(`DELETE FROM files WHERE id=?`, id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // ---------- subtitles ----------
 
 func (s *Store) UpsertSubtitle(sub *models.Subtitle) error {
@@ -2126,14 +1957,9 @@ func (s *Store) UpsertSubtitle(sub *models.Subtitle) error {
 	return err
 }
 
-// DeleteSubtitlesByPrefixNotIn removes a file's driver-published subtitle rows
-// that are no longer in keep, limited to the given path prefix.
-//
-// The prefix is what keeps this from deleting a subtitle *file* that another
-// driver registered for the same media file: only the source's own tracks (the
-// ones it just listed, and no longer lists) are touched. An empty keep removes
-// every row with the prefix, which is what a source that stopped publishing
-// subtitles for a file means.
+// DeleteSubtitlesByPrefixNotIn removes a file's published subtitle rows under
+// prefix that are no longer in keep. The prefix keeps rows another driver
+// registered for the same media file intact.
 func (s *Store) DeleteSubtitlesByPrefixNotIn(fileID int64, prefix string, keep []string) error {
 	if prefix == "" {
 		return nil
@@ -2190,11 +2016,10 @@ func (s *Store) SubtitleByID(id int64) (*models.Subtitle, error) {
 
 // ---------- progress ----------
 
+// SaveProgress stores a playback position. The played flag is only ever raised
+// here, so a periodic save cannot undo an explicit "mark watched"; clearing it
+// is SetPlayed's job.
 func (s *Store) SaveProgress(p *models.Progress) error {
-	// played is only ever raised here, never cleared: a periodic playback save
-	// (played=false) must not undo an explicit "mark watched". The ON CONFLICT
-	// arm keeps an already-watched row watched, while a save that crossed the
-	// completion threshold raises it. Clearing is SetPlayed's job.
 	_, err := s.DB.Exec(`INSERT INTO progress (user_id, file_id, item_id, position, duration, played, updated_at)
 		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(user_id, file_id) DO UPDATE SET position=excluded.position, duration=excluded.duration,
@@ -2204,18 +2029,14 @@ func (s *Store) SaveProgress(p *models.Progress) error {
 	if err != nil {
 		return err
 	}
-	// Watching again overrides "remove from Continue Watching": the item is
-	// deliberately back in the row, so the hidden marker must not survive it.
+	// Watching again clears a previous "remove from Continue Watching".
 	_, err = s.DB.Exec(`DELETE FROM resume_hidden WHERE user_id=? AND item_id=?`, p.UserID, p.ItemID)
 	return err
 }
 
-// SetPlayed writes the explicit watched flag for one file without requiring a
-// known duration — that is the whole point of the field. It creates the row for
-// an item that was never played, so "mark watched" succeeds on a file the
-// server has not probed. When marking watched with a measured duration, the
-// position is moved to the end so a percentage reads as complete; an existing
-// resume position is otherwise preserved, and unmarking only lowers the flag.
+// SetPlayed writes the explicit watched flag, creating the row for an item that
+// was never played. Marking watched with a known duration also moves the
+// position to the end so the percentage reads as complete.
 func (s *Store) SetPlayed(p *models.Progress) error {
 	_, err := s.DB.Exec(`INSERT INTO progress (user_id, file_id, item_id, position, duration, played, updated_at)
 		VALUES (?,?,?,?,?,?,?)
@@ -2233,68 +2054,33 @@ func (s *Store) SetPlayed(p *models.Progress) error {
 	return err
 }
 
+// ProgressByUser lists resumable rows for a viewer. Items hidden from Continue
+// Watching, explicitly watched rows and positions under 30 seconds are skipped.
 func (s *Store) ProgressByUser(userID int64) ([]models.Progress, error) {
-	// Items the user removed from Continue Watching stay out of both the Emby
-	// resume row and the web home row. The progress row itself is untouched, so
-	// the position and watched state survive; resuming playback clears the flag.
-	// An explicitly-watched row is not resumable even if it still carries a
-	// position, so marking something watched does not leave a resume card.
-	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
+	return s.queryProgress(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
 		FROM progress p WHERE p.user_id=? AND p.position > 30 AND p.played=0
 		AND NOT EXISTS (SELECT 1 FROM resume_hidden h WHERE h.user_id=p.user_id AND h.item_id=p.item_id)
 		ORDER BY updated_at DESC LIMIT 50`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []models.Progress
-	for rows.Next() {
-		var p models.Progress
-		var played int
-		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &played, &p.UpdatedAt); err != nil {
-			return nil, err
-		}
-		p.Played = played != 0
-		out = append(out, p)
-	}
-	return out, rows.Err()
 }
 
-// HistoryByUser lists every item this viewer has touched, most recent first —
-// the "观看记录" list behind the profile menu. Unlike ProgressByUser it does not
-// hide items the viewer removed from Continue Watching, and it does not require
-// the position to be past the resume threshold: a record is a record. An item
-// marked watched before it was ever played has no position, but the explicit
-// flag still makes it a record.
+// HistoryByUser lists every item this viewer has touched, most recent first.
+// Unlike ProgressByUser it includes hidden items and rows below the resume
+// threshold.
 func (s *Store) HistoryByUser(userID int64) ([]models.Progress, error) {
-	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
+	return s.queryProgress(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
 		FROM progress p WHERE p.user_id=? AND (p.position > 0 OR p.played=1)
 		ORDER BY updated_at DESC LIMIT 300`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []models.Progress
-	for rows.Next() {
-		var p models.Progress
-		var played int
-		if err := rows.Scan(&p.UserID, &p.FileID, &p.ItemID, &p.Position, &p.Duration, &played, &p.UpdatedAt); err != nil {
-			return nil, err
-		}
-		p.Played = played != 0
-		out = append(out, p)
-	}
-	return out, rows.Err()
 }
 
-// WatchedByUser lists what a viewer has finished, most recent first. It reads
-// the explicit played flag: since playback past the 90% threshold — and Emby's
-// "mark watched" — both raise that flag, the "已观看" list stays in agreement
-// with what any client reports as played.
+// WatchedByUser lists what a viewer has finished, most recent first.
 func (s *Store) WatchedByUser(userID int64) ([]models.Progress, error) {
-	rows, err := s.DB.Query(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
+	return s.queryProgress(`SELECT user_id, file_id, item_id, position, duration, played, updated_at
 		FROM progress p WHERE p.user_id=? AND p.played=1
 		ORDER BY updated_at DESC LIMIT 200`, userID)
+}
+
+func (s *Store) queryProgress(query string, args ...any) ([]models.Progress, error) {
+	rows, err := s.DB.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2325,9 +2111,8 @@ func (s *Store) ProgressForFile(userID, fileID int64) (*models.Progress, error) 
 	return p, nil
 }
 
-// HideFromResume remembers that a user removed an item from Continue Watching.
-// Progress is left untouched so the watched/played state and the exact resume
-// position survive; only the resume listing skips the item.
+// HideFromResume toggles the hidden marker without touching the progress row,
+// so position and watched state survive.
 func (s *Store) HideFromResume(userID, itemID int64, hide bool) error {
 	if !hide {
 		_, err := s.DB.Exec(`DELETE FROM resume_hidden WHERE user_id=? AND item_id=?`, userID, itemID)
@@ -2337,8 +2122,8 @@ func (s *Store) HideFromResume(userID, itemID int64, hide bool) error {
 	return err
 }
 
-// EmbyUserConfiguration returns the stored JSON object, or "" when the user
-// has never saved settings. Callers merge it over protocol defaults.
+// EmbyUserConfiguration returns the stored JSON object, or "" when the user has
+// never saved settings.
 func (s *Store) EmbyUserConfiguration(userID int64) (string, error) {
 	var data string
 	err := s.DB.QueryRow(`SELECT data FROM emby_user_configuration WHERE user_id=?`, userID).Scan(&data)
@@ -2373,11 +2158,8 @@ func (s *Store) BangumiAccountByUser(userID int64) (*models.BangumiAccount, erro
 	return a, nil
 }
 
-// SaveBangumiCredential replaces the viewer's credential in one transaction.
-// Replacing a token increments the generation; switching to another Bangumi
-// identity also drops the old queue. The update is guarded by the generation
-// read in the same transaction, so two near-simultaneous connections cannot
-// both claim the same successor generation.
+// SaveBangumiCredential replaces the viewer's credential. Every replacement
+// increments the generation, and switching identity drops the old queue.
 func (s *Store) SaveBangumiCredential(a *models.BangumiAccount) error {
 	for attempt := 0; attempt < 4; attempt++ {
 		retry, err := s.saveBangumiCredentialOnce(a)
@@ -2506,7 +2288,7 @@ func (s *Store) SetBangumiSyncEnabled(userID int64, enabled bool) error {
 }
 
 // ResumePausedBangumiJobs makes the user's paused queue due immediately when
-// sync is turned back on. Failed jobs are deliberately not included.
+// sync is turned back on. Failed jobs are not included.
 func (s *Store) ResumePausedBangumiJobs(userID int64, now time.Time) error {
 	_, err := s.DB.Exec(`UPDATE bangumi_sync_jobs
 		SET next_attempt_at=?, updated_at=?
@@ -2524,9 +2306,7 @@ func (s *Store) SetBangumiAccountError(userID int64, msg string) error {
 	return err
 }
 
-// DeleteBangumiAccount removes both the credential and its outstanding queue.
-// Leaving jobs behind would make a later reconnect replay work the user has
-// already disconnected from.
+// DeleteBangumiAccount removes the credential and its outstanding queue.
 func (s *Store) DeleteBangumiAccount(userID int64) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -2542,16 +2322,12 @@ func (s *Store) DeleteBangumiAccount(userID int64) error {
 	return tx.Commit()
 }
 
-// EnqueueBangumiSync records a completed local episode without any network
-// access. The worker resolves the Bangumi chapter later, which keeps the
-// player's progress save independent of Bangumi latency. The account generation
-// pins the job to the credential the viewer had when they watched it.
+// EnqueueBangumiSync records a completed local episode; the worker resolves the
+// Bangumi chapter later. A duplicate is a successful no-op.
 func (s *Store) EnqueueBangumiSync(userID, fileID int64, subjectID, episodeNumber int, now time.Time) error {
 	if subjectID <= 0 || episodeNumber <= 0 {
 		return fmt.Errorf("Bangumi 条目或本地集数无效")
 	}
-	// A duplicate is a successful no-op. The unique index below turns a
-	// simultaneous duplicate into the same no-op.
 	_, err := s.DB.Exec(`INSERT INTO bangumi_sync_jobs
 		(user_id, file_id, subject_id, episode_id, episode_number, account_generation,
 		 status, attempts, lease_token, next_attempt_at, last_error, created_at, updated_at)
@@ -2571,13 +2347,9 @@ func (s *Store) EnqueueBangumiSync(userID, fileID int64, subjectID, episodeNumbe
 	return nil
 }
 
-// SetBangumiJobTarget snapshots the resolved Bangumi chapter. A legacy row may
-// have a target but no local episode number; filling both in one update keeps
-// the unique index meaningful without a second queue row.
+// SetBangumiJobTarget snapshots the resolved Bangumi chapter. A placeholder
+// whose episode is already owned by another row is removed instead.
 func (s *Store) SetBangumiJobTarget(jobID int64, subjectID, episodeID, episodeNumber int, generation int64, leaseToken string) error {
-	// A legacy placeholder has no target. If another row already owns this
-	// local episode, merging it here would violate the partial unique index;
-	// remove the placeholder instead.
 	var duplicate int
 	err := s.DB.QueryRow(`SELECT 1 FROM bangumi_sync_jobs
 		WHERE user_id=(SELECT user_id FROM bangumi_sync_jobs WHERE id=?)
@@ -2622,8 +2394,7 @@ func isBangumiEpisodeDuplicate(err error) bool {
 }
 
 // DeleteBangumiJobIfLeased removes an obsolete processing row only if the
-// caller still holds its lease. It is used when a job turns out to be a
-// duplicate of a target another row already owns.
+// caller still holds its lease.
 func (s *Store) DeleteBangumiJobIfLeased(jobID int64, leaseToken string) error {
 	_, err := s.DB.Exec(`DELETE FROM bangumi_sync_jobs WHERE id=? AND lease_token=?`, jobID, leaseToken)
 	return err
@@ -2645,8 +2416,7 @@ func (s *Store) RetryBangumiSyncJobs(userID int64, now time.Time) (int64, error)
 }
 
 // CompletedProgressFiles lists local files whose progress reached the watched
-// threshold. The service still resolves and validates the Bangumi target before
-// queueing, so films and unmatched shows never create jobs.
+// threshold.
 func (s *Store) CompletedProgressFiles(userID int64) ([]int64, error) {
 	rows, err := s.DB.Query(`SELECT p.file_id
 		FROM progress p
@@ -2685,8 +2455,8 @@ func (s *Store) RecoverBangumiSyncJobs(now time.Time) error {
 	return err
 }
 
-// ClaimBangumiSyncJob leases one due job. The service is single-worker, but a
-// lease also prevents a second process sharing the database from double-posting.
+// ClaimBangumiSyncJob leases one due job so a second process sharing the
+// database cannot post it as well.
 func (s *Store) ClaimBangumiSyncJob(now time.Time) (*models.BangumiSyncJob, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -2735,9 +2505,8 @@ func (s *Store) ClaimBangumiSyncJob(now time.Time) (*models.BangumiSyncJob, erro
 	return job, nil
 }
 
-// RequeueBangumiJobIfLeased returns a paused job to pending. It keeps the
-// claim lease intact until the transition succeeds, so a stale worker cannot
-// un-pause a newer claim.
+// RequeueBangumiJobIfLeased returns a paused job to pending, but only for the
+// worker that still holds the lease.
 func (s *Store) RequeueBangumiJobIfLeased(jobID int64, leaseToken string, next time.Time, msg string) error {
 	res, err := s.DB.Exec(`UPDATE bangumi_sync_jobs
 		SET status='pending', next_attempt_at=?, last_error=?, updated_at=?, lease_token=''
@@ -2752,9 +2521,8 @@ func (s *Store) RequeueBangumiJobIfLeased(jobID int64, leaseToken string, next t
 	return nil
 }
 
-// UpdateBangumiSyncJob fences a worker's result on the lease it claimed. An
-// expired worker that wakes up after another worker reclaimed the job cannot
-// overwrite the newer attempt.
+// UpdateBangumiSyncJob writes a worker's result only if it still holds the
+// lease, so an expired worker cannot overwrite a newer attempt.
 func (s *Store) UpdateBangumiSyncJob(job *models.BangumiSyncJob) error {
 	res, err := s.DB.Exec(`UPDATE bangumi_sync_jobs
 		SET status=?, attempts=?, lease_token='', next_attempt_at=?, last_error=?, updated_at=?

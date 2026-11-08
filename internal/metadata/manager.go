@@ -993,13 +993,8 @@ func (m *Manager) RefreshItem(itemID int64, tmdbID int) (refreshErr error) {
 		}
 		it.TMDBID, it.BGMID, it.Overview, it.PosterPath, it.BackdropPath = 0, 0, "", "", ""
 		_ = m.Store.UpdateItemMeta(it)
-		// The episode file is what the local nfo provider reads — it needs a
-		// path to look for sidecars beside. The online providers do not: Bangumi
-		// and TMDB identify a show by its name (and the year on the item), so a
-		// show whose file could not be bound — a folder whose only video has no
-		// episode number, or a row a previous scan left behind — is still
-		// identifiable. Failing here instead returned "剧集下没有可用的剧集文件"
-		// for exactly the shows a user opens "重新识别" to repair.
+		// Only the nfo provider needs a file path; bgm and tmdb identify a show
+		// by name alone, so a show with no bound file is still refreshable.
 		filePath, epSource, ok := m.firstEpisodeFile(it.ID)
 		if ok {
 			if d := m.driverFor(epSource); d != nil {
@@ -1009,9 +1004,7 @@ func (m *Manager) RefreshItem(itemID int64, tmdbID int) (refreshErr error) {
 		for _, p := range providers(lib) {
 			switch p {
 			case "nfo":
-				// A sidecar lives beside a file; with no file there is nothing
-				// to read, and the provider is skipped rather than failing the
-				// whole refresh.
+				// A sidecar lives beside a file, so skip it when there is none.
 				if ok && m.tryShowNFO(ctx, drv, it, filePath, epSource) {
 					return nil
 				}
@@ -1031,8 +1024,7 @@ func (m *Manager) RefreshItem(itemID int64, tmdbID int) (refreshErr error) {
 	}
 }
 
-// RefreshItemByBGM pins an item to a specific Bangumi subject (manual identify
-// for anime, where search results are often ambiguous).
+// RefreshItemByBGM pins an item to a specific Bangumi subject.
 func (m *Manager) RefreshItemByBGM(itemID int64, bgmID int) (refreshErr error) {
 	it, err := m.Store.ItemByID(itemID)
 	if err != nil {
@@ -1048,9 +1040,8 @@ func (m *Manager) RefreshItemByBGM(itemID int64, bgmID int) (refreshErr error) {
 	return m.applyBGM(ctx, it, sub)
 }
 
-// Manual identification is not a scan, but its failures must appear in the same
-// diagnostics. Success also reconciles unresolved metadata or missing files;
-// returning nil alone does not prove that a provider actually matched anything.
+// recordRefreshIssue writes a manual refresh's outcome to the scan diagnostics.
+// A nil error does not mean a provider matched, so the item is re-checked.
 func (m *Manager) recordRefreshIssue(itemID int64, refreshErr error) {
 	failure := ""
 	if refreshErr != nil {
@@ -1067,15 +1058,6 @@ func firstFile(store *db.Store, itemID int64) *models.MediaFile {
 		return nil
 	}
 	return &fls[0]
-}
-
-func firstErr(errs ...error) error {
-	for _, e := range errs {
-		if e != nil {
-			return e
-		}
-	}
-	return nil
 }
 
 func orDefaultStr(s, def string) string {
