@@ -1864,33 +1864,45 @@ func firstPathSegment(path string) string {
 	return p
 }
 
-// ScrapeIssues lists the library's root items (films and series) that no
-// provider identified: no provider id and no artwork. Seasons and episodes are
-// skipped deliberately — they inherit their show's identity, so a show nobody
-// identified would otherwise repeat itself once per episode.
-//
-// A non-empty path narrows the answer to one scan scope: only items reachable
-// from files under that directory. That is what lets a path scan record its own
-// problems without claiming anything for the rest of the library.
+// ScrapeIssues reports unidentified roots and roots without associated media
+// files. Starting from items keeps empty shows visible in the diagnostics.
+// A path scan reports only items reachable from files inside its own scope.
 func (s *Store) ScrapeIssues(libraryID, sourceID int64, path string) ([]models.ScanIssue, error) {
-	q := `SELECT root.id, root.type, root.name, f.source_id, f.path
-		FROM files f
-		JOIN items ep ON ep.id = f.item_id
-		LEFT JOIN items se ON se.id = ep.parent_id AND se.type = 'season'
-		LEFT JOIN items sh ON sh.id = se.parent_id AND sh.type = 'show'
-		JOIN items root ON root.id = CASE
-			WHEN ep.type = 'movie' THEN ep.id
-			WHEN ep.type = 'episode' THEN COALESCE(sh.id, se.id)
-			ELSE ep.id END
-		WHERE root.library_id = ?
-			AND root.type IN ('movie', 'show')
-			AND root.tmdb_id = 0 AND root.bgm_id = 0
-			AND (root.poster_path IS NULL OR root.poster_path = '')
-			AND (root.backdrop_path IS NULL OR root.backdrop_path = '')`
+	return s.scrapeIssues(libraryID, sourceID, path, 0)
+}
+
+func (s *Store) scrapeIssues(libraryID, sourceID int64, path string, itemID int64) ([]models.ScanIssue, error) {
+	q := `WITH RECURSIVE descendants(root_id, id, library_id) AS (
+		SELECT id, id, library_id FROM items
+		WHERE library_id = ? AND type IN ('movie', 'show')`
 	args := []any{libraryID}
+	if itemID != 0 {
+		q += ` AND id = ?`
+		args = append(args, itemID)
+	}
+	q += ` UNION
+		SELECT d.root_id, i.id, d.library_id FROM items i
+		JOIN descendants d ON i.parent_id = d.id AND i.library_id = d.library_id
+	), root_files AS (
+		SELECT d.root_id, f.id, f.source_id, f.path FROM descendants d
+		JOIN items media ON media.id = d.id
+		JOIN files f ON f.item_id = media.id
+		WHERE media.type = 'episode' OR (media.type = 'movie' AND media.id = d.root_id)
+	)
+	SELECT root.id, root.type, root.name, COALESCE(f.source_id, 0),
+		COALESCE(f.path, ''), f.id IS NULL
+	FROM items root
+	JOIN descendants d ON d.root_id = root.id AND d.id = root.id
+	LEFT JOIN root_files f ON f.root_id = root.id
+	WHERE (f.id IS NULL OR (
+		root.tmdb_id = 0 AND root.bgm_id = 0
+		AND (root.poster_path IS NULL OR root.poster_path = '')
+		AND (root.backdrop_path IS NULL OR root.backdrop_path = '')))`
 	if path != "" {
-		q += ` AND f.source_id = ? AND (f.path = ? OR f.path LIKE ?)`
-		args = append(args, sourceID, path, path+"/%")
+		// Without a file, a root cannot safely be attributed to a subtree.
+		q += ` AND f.source_id = ? AND (f.path = ? OR substr(f.path, 1, length(?)) = ?)`
+		prefix := strings.TrimRight(path, "/") + "/"
+		args = append(args, sourceID, path, prefix, prefix)
 	}
 	q += ` ORDER BY root.id, f.id`
 	rows, err := s.DB.Query(q, args...)
@@ -1903,7 +1915,8 @@ func (s *Store) ScrapeIssues(libraryID, sourceID int64, path string) ([]models.S
 	for rows.Next() {
 		var id, srcID int64
 		var typ, name, filePath string
-		if err := rows.Scan(&id, &typ, &name, &srcID, &filePath); err != nil {
+		var missingFile bool
+		if err := rows.Scan(&id, &typ, &name, &srcID, &filePath, &missingFile); err != nil {
 			return nil, err
 		}
 		if seen[id] {
@@ -1913,6 +1926,12 @@ func (s *Store) ScrapeIssues(libraryID, sourceID int64, path string) ([]models.S
 		detail := "没有匹配到刮削结果(未取得 TMDB / Bangumi 信息和封面)"
 		if typ == "show" {
 			detail = "这个剧集没有匹配到刮削结果(未取得 TMDB / Bangumi 信息和封面)"
+		}
+		if missingFile {
+			detail = "条目没有关联的媒体文件(文件关联异常,并非类型不匹配),请重新扫描所属媒体库"
+			if typ == "show" {
+				detail = "剧集下没有关联的剧集文件(文件关联异常,并非类型不匹配),请重新扫描所属媒体库"
+			}
 		}
 		out = append(out, models.ScanIssue{
 			LibraryID: libraryID, Kind: models.ScanIssueScrape,
@@ -1958,8 +1977,51 @@ func (s *Store) FilesWithoutProbe(libraryID int64, limit int) ([]*models.MediaFi
 
 // ---------- scan issues ----------
 
+// SyncItemScrapeIssue updates only one refreshed root's diagnostic. A manual
+// refresh must not erase other items' errors or file-level type mismatches.
+func (s *Store) SyncItemScrapeIssue(itemID int64, failure string) error {
+	it, err := s.ItemByID(itemID)
+	if err != nil {
+		return err
+	}
+	if it.Type != "movie" && it.Type != "show" {
+		return nil
+	}
+	issues, err := s.scrapeIssues(it.LibraryID, 0, "", itemID)
+	if err != nil {
+		return err
+	}
+	if failure != "" {
+		if len(issues) == 0 {
+			issues = []models.ScanIssue{{LibraryID: it.LibraryID, Kind: models.ScanIssueScrape, ItemID: it.ID, Name: it.Name}}
+		}
+		if issues[0].Detail != "" {
+			issues[0].Detail += "; "
+		}
+		issues[0].Detail += "重新识别失败: " + failure
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM scan_issues WHERE library_id=? AND item_id=? AND kind=?`,
+		it.LibraryID, itemID, models.ScanIssueScrape); err != nil {
+		return err
+	}
+	for _, issue := range issues {
+		if _, err := tx.Exec(`INSERT INTO scan_issues
+			(library_id, kind, source_id, path, item_id, name, detail, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, issue.LibraryID, issue.Kind, issue.SourceID,
+			issue.Path, issue.ItemID, issue.Name, issue.Detail, time.Now()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ReplaceScanIssues swaps a library's issue list for the one a scan just
-// produced. A scan is the only writer, and it sees the whole library, so
+// produced. Manual refresh also updates its own item via SyncItemScrapeIssue;
 // keeping old rows would leave issues for files that have since been fixed.
 // scoped keeps only the rows outside a path scan's subtree: a partial scan
 // cannot speak for the rest of the library.

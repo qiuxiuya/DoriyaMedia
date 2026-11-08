@@ -193,11 +193,12 @@ type MediaFile struct {
 //     library needs a title it can read out of the name. The file is left out
 //     of the shelf (and is still playable through the browser), so without a
 //     record of it nothing would say where it went.
-//   - "scrape": the item was organised into the library but no provider could
-//     identify it, so it sits there as a bare folder name with no artwork.
+//   - "scrape": an organised item lacks metadata, has no associated media
+//     files, or failed a manual refresh. Detail distinguishes those causes;
+//     missing file associations do not establish a file-type mismatch.
 //
-// Rows are replaced by every scan of the library, so the list always describes
-// the library as it is now rather than as it was when a scan last ran.
+// Scans replace their scope's rows. Manual identification reconciles only the
+// refreshed root's scrape issues, leaving unrelated and mismatch rows intact.
 type ScanIssue struct {
 	ID        int64  `json:"id"`
 	LibraryID int64  `json:"library_id"`

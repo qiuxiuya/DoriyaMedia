@@ -941,11 +941,12 @@ func isPlaceholderEpisodeName(ep *models.Item) bool {
 }
 
 // RefreshItem re-identifies one item, optionally pinning a TMDB id.
-func (m *Manager) RefreshItem(itemID int64, tmdbID int) error {
+func (m *Manager) RefreshItem(itemID int64, tmdbID int) (refreshErr error) {
 	it, err := m.Store.ItemByID(itemID)
 	if err != nil {
 		return err
 	}
+	defer func() { m.recordRefreshIssue(itemID, refreshErr) }()
 	lib, err := m.Store.LibraryByID(it.LibraryID)
 	if err != nil {
 		return err
@@ -1032,11 +1033,12 @@ func (m *Manager) RefreshItem(itemID int64, tmdbID int) error {
 
 // RefreshItemByBGM pins an item to a specific Bangumi subject (manual identify
 // for anime, where search results are often ambiguous).
-func (m *Manager) RefreshItemByBGM(itemID int64, bgmID int) error {
+func (m *Manager) RefreshItemByBGM(itemID int64, bgmID int) (refreshErr error) {
 	it, err := m.Store.ItemByID(itemID)
 	if err != nil {
 		return err
 	}
+	defer func() { m.recordRefreshIssue(itemID, refreshErr) }()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	sub, err := m.bgm().Subject(ctx, bgmID)
@@ -1044,6 +1046,19 @@ func (m *Manager) RefreshItemByBGM(itemID int64, bgmID int) error {
 		return err
 	}
 	return m.applyBGM(ctx, it, sub)
+}
+
+// Manual identification is not a scan, but its failures must appear in the same
+// diagnostics. Success also reconciles unresolved metadata or missing files;
+// returning nil alone does not prove that a provider actually matched anything.
+func (m *Manager) recordRefreshIssue(itemID int64, refreshErr error) {
+	failure := ""
+	if refreshErr != nil {
+		failure = refreshErr.Error()
+	}
+	if err := m.Store.SyncItemScrapeIssue(itemID, failure); err != nil {
+		log.Printf("metadata: record refresh issue for item %d failed: %v", itemID, err)
+	}
 }
 
 func firstFile(store *db.Store, itemID int64) *models.MediaFile {
