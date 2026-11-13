@@ -17,7 +17,13 @@ const selectedFile = ref(null)
 const busy = ref(false)
 const expanded = ref(false)
 const pinOpen = ref(false)
-const pinBGM = ref('')
+const pinProvider = ref('bgm')
+const pinID = ref('')
+const pinLabel = computed(() => (pinProvider.value === 'bgm' ? 'Bangumi' : 'TMDB'))
+const pinPlaceholder = computed(() => (pinProvider.value === 'bgm' ? '如 328609' : '如 12345'))
+const pinHint = computed(() => (pinProvider.value === 'bgm'
+  ? '有歧义时填入 bgm.tv 条目 URL 里的数字即可指定。'
+  : '有歧义时填入 themoviedb.org 条目 URL 里的数字即可指定。'))
 
 const item = computed(() => data.value?.item)
 const library = computed(() => data.value?.library)
@@ -69,19 +75,27 @@ async function refresh() {
   }
 }
 
-async function refreshBGM() {
-  if (!pinBGM.value) return
+async function refreshByID() {
+  if (!pinID.value) return
+  const id = Number(pinID.value)
+  const body = pinProvider.value === 'bgm' ? { bgm_id: id } : { tmdb_id: id }
   busy.value = true
   try {
-    await api.post(`/api/items/${route.params.id}/refresh`, { bgm_id: Number(pinBGM.value) })
+    await api.post(`/api/items/${route.params.id}/refresh`, body)
     await load()
     pinOpen.value = false
-    toast.ok(`已按 Bangumi #${pinBGM.value} 匹配`)
+    toast.ok(`已按 ${pinLabel.value} #${id} 匹配`)
   } catch (e) {
     toast.err(e.message)
   } finally {
     busy.value = false
   }
+}
+
+function pickProvider(p) {
+  if (pinProvider.value === p) return
+  pinProvider.value = p
+  pinID.value = ''
 }
 
 function seasonLabel(s) {
@@ -159,12 +173,20 @@ function seasonBackdrop(s) {
                 </button>
                 <Transition name="fade">
                   <div v-if="pinOpen" class="pin-pop">
-                    <div class="label">Bangumi 条目 ID</div>
-                    <div class="pin-row">
-                      <input v-model="pinBGM" class="input" placeholder="如 328609" inputmode="numeric" @keyup.enter="refreshBGM" />
-                      <button class="btn primary" :disabled="busy || !pinBGM" @click="refreshBGM">匹配</button>
+                    <div class="pin-seg">
+                      <button
+                        v-for="p in ['bgm', 'tmdb']" :key="p" class="chip sm"
+                        :class="{ on: pinProvider === p }" @click="pickProvider(p)"
+                      >
+                        {{ p === 'bgm' ? 'Bangumi' : 'TMDB' }}
+                      </button>
                     </div>
-                    <div class="tiny">有歧义时填入 bgm.tv 条目 URL 里的数字即可指定。</div>
+                    <div class="label">{{ pinLabel }} 条目 ID</div>
+                    <div class="pin-row">
+                      <input v-model="pinID" class="input" :placeholder="pinPlaceholder" inputmode="numeric" @keyup.enter="refreshByID" />
+                      <button class="btn primary" :disabled="busy || !pinID" @click="refreshByID">匹配</button>
+                    </div>
+                    <div class="tiny">{{ pinHint }}</div>
                   </div>
                 </Transition>
               </div>
@@ -379,6 +401,7 @@ function seasonBackdrop(s) {
   box-shadow: var(--sh-3);
   backdrop-filter: blur(18px);
 }
+.pin-seg { display: flex; gap: 6px; margin-bottom: 10px; }
 .pin-row { display: flex; gap: 8px; margin: 8px 0; }
 .pin-row .input { min-height: 38px; height: 38px; }
 .matched { display: flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--text-4); }
