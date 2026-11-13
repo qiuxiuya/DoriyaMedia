@@ -184,8 +184,8 @@ func (sc *Scanner) scannedFiles(lib *models.Library, records []fileRec) []models
 	return files
 }
 
-// pruneScanItems follows only parents of removed files. A path scan must not
-// opportunistically delete unrelated orphan items elsewhere in the library.
+// pruneScanItems follows only owners of removed or rebound files and their
+// parents. A path scan must not delete unrelated orphans elsewhere in the library.
 func (sc *Scanner) pruneScanItems(libID int64, itemIDs []int64) error {
 	seen := map[int64]bool{}
 	for len(itemIDs) > 0 {
@@ -195,6 +195,10 @@ func (sc *Scanner) pruneScanItems(libID int64, itemIDs []int64) error {
 			continue
 		}
 		it, err := sc.Store.ItemByID(id)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Deleted-file cleanup may already have pruned a displaced owner.
+			continue
+		}
 		if err != nil {
 			return err
 		}

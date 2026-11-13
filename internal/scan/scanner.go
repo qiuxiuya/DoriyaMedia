@@ -2,6 +2,8 @@ package scan
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -604,17 +606,63 @@ func (sc *Scanner) organize(lib *models.Library, files []fileRec, prog *models.S
 	// is what makes a rescan of an unchanged library cheap.
 	states := sc.fileStates(lib)
 
+	var scope *scanScope
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	loadedStates := states != nil
+	if states == nil {
+		states = map[string]db.FileState{}
+	}
+	var reboundItems []int64
+	writeFile := func(fr fileRec, itemID int64) error {
+		if unchangedFile(states, fr, itemID) {
+			return nil
+		}
+		key := fileSourceKey(fr.SourceID, fr.Path)
+		previous, known := states[key]
+		if scope != nil && !loadedStates && !known {
+			// A failed bulk read must not hide the owner a scoped upsert is
+			// about to displace. Resolve that file before changing its binding.
+			f, err := sc.Store.FileBySourcePath(fr.SourceID, fr.Path)
+			if err == nil {
+				previous.ItemID = f.ItemID
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		fileID, err := sc.Store.UpsertFile(&models.MediaFile{
+			ItemID: itemID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
+		})
+		if err != nil {
+			return err
+		}
+		if scope != nil && previous.ItemID != 0 && previous.ItemID != itemID {
+			reboundItems = append(reboundItems, previous.ItemID)
+		}
+		// Track writes from this pass too: two STRM aliases discovered in a
+		// brand-new directory can rebind the same URL before any prior scan.
+		states[key] = db.FileState{FileID: fileID, ItemID: itemID, Size: fr.Size, MTime: fr.MTime}
+		return nil
+	}
+
 	// Issues travel back with the organize pass so the scan can persist them
 	// beside its other results: a file the library's type cannot take would
 	// otherwise vanish without a trace.
+	var issues []models.ScanIssue
+	var err error
 	switch lib.Type {
 	case "series":
-		issues, err := sc.organizeSeries(lib, files, prog, current, walked, partial, listings, states, scopes...)
-		return issues, sc.finishOrganize(lib, err)
+		issues, err = sc.organizeSeries(lib, files, prog, current, walked, partial, listings, writeFile, scopes...)
 	default:
-		issues, err := sc.organizeMovies(lib, files, prog, current, walked, partial, listings, states, scopes...)
-		return issues, sc.finishOrganize(lib, err)
+		issues, err = sc.organizeMovies(lib, files, prog, current, walked, partial, listings, writeFile, scopes...)
 	}
+	if err == nil && scope != nil {
+		// Rebinding keeps the file row, so cleanup's deleted-file list cannot
+		// find its old episode/season/show. Prune only those displaced owners.
+		err = sc.pruneScanItems(lib.ID, reboundItems)
+	}
+	return issues, sc.finishOrganize(lib, err)
 }
 
 // finishOrganize closes an organize pass by recomputing the source type each
@@ -630,7 +678,7 @@ func (sc *Scanner) finishOrganize(lib *models.Library, err error) error {
 	return err
 }
 
-func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, states map[string]db.FileState, scopes ...*scanScope) ([]models.ScanIssue, error) {
+func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, writeFile func(fileRec, int64) error, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	existing, _, err := sc.Store.ItemsByLibrary(lib.ID, "movie", "", "", false, 0, 1000000)
 	if err != nil {
 		log.Printf("organize: load movies failed: %v", err)
@@ -702,12 +750,7 @@ func (sc *Scanner) organizeMovies(lib *models.Library, files []fileRec, prog *mo
 			byKey[key] = it.ID
 		}
 		for _, fr := range g.Files {
-			if unchangedFile(states, fr, itemID) {
-				continue
-			}
-			if _, err := sc.Store.UpsertFile(&models.MediaFile{
-				ItemID: itemID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
-			}); err != nil {
+			if err := writeFile(fr, itemID); err != nil {
 				return issues, err
 			}
 		}
@@ -889,7 +932,7 @@ func planShow(childCount map[string]int, libPath, dir, filePath string, parsedSe
 	}
 }
 
-func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, states map[string]db.FileState, scopes ...*scanScope) ([]models.ScanIssue, error) {
+func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *models.ScanProgress, current, walked, partial map[int64]bool, listings map[string][]source.Entry, writeFile func(fileRec, int64) error, scopes ...*scanScope) ([]models.ScanIssue, error) {
 	idx := &seriesIndex{
 		shows:       map[string]int64{},
 		seasons:     map[string]int64{},
@@ -1211,13 +1254,9 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			}
 		}
 
-		if !unchangedFile(states, fr, epID) {
-			if _, err := sc.Store.UpsertFile(&models.MediaFile{
-				ItemID: epID, SourceID: fr.SourceID, Path: fr.Path, Size: fr.Size, MTime: fr.MTime,
-			}); err != nil {
-				log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)
-				return nil, err
-			}
+		if err := writeFile(fr, epID); err != nil {
+			log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)
+			return nil, err
 		}
 		prog.Update(func(st *models.ScanState) {
 			st.Done++
