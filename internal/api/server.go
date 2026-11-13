@@ -160,6 +160,25 @@ func (s *Server) requireAdmin(h authedHandler) http.HandlerFunc {
 	}
 }
 
+// requireFileAccess gates the raw file browser. Who may open it is the owner's
+// choice (FileBrowser): "all" admits any signed-in user, "admin" (the default)
+// keeps it to administrators, and "off" refuses everyone. The configured value
+// is read per request, so flipping the setting takes effect without a restart.
+func (s *Server) requireFileAccess(h authedHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u := s.currentUser(r)
+		if u == nil {
+			fail(w, 401, "未登录")
+			return
+		}
+		if !s.Cfg.FileBrowserAccessible(u.IsAdmin()) {
+			fail(w, 403, "文件浏览未开放")
+			return
+		}
+		h(w, r, u)
+	}
+}
+
 // ---------- signed URLs (for players that cannot send headers) ----------
 
 func signPayload(fileID int64, exp int64) string {
@@ -258,8 +277,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.requireAdmin(s.handlePutConfig))
 	mux.HandleFunc("POST /api/metadata/test", s.requireAdmin(s.handleMetadataTest))
 
-	// sources
-	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleListSources))
+	// sources — the file browser's source list. Gated by the owner's
+	// file-browser visibility: "all" / "admin" / "off". Writes stay admin-only.
+	mux.HandleFunc("GET /api/sources", s.requireFileAccess(s.handleListSources))
 	mux.HandleFunc("POST /api/sources", s.requireAdmin(s.handleCreateSource))
 	mux.HandleFunc("PUT /api/sources/{id}", s.requireAdmin(s.handleUpdateSource))
 	mux.HandleFunc("DELETE /api/sources/{id}", s.requireAdmin(s.handleDeleteSource))
@@ -286,33 +306,42 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/libraries/{id}/poster", s.requireAdmin(s.handleLibraryPosterClear))
 	mux.HandleFunc("POST /api/libraries/{id}/scan", s.requireAdmin(s.handleScanLibrary))
 	mux.HandleFunc("POST /api/libraries/{id}/scan/stop", s.requireAdmin(s.handleStopScan))
-	mux.HandleFunc("GET /api/scan/status", s.requireAuth(s.handleScanStatus))
+	// Scan status and the leftover-issue list are maintenance diagnostics, not
+	// something a viewer acts on; keep them beside the scan controls they explain.
+	mux.HandleFunc("GET /api/scan/status", s.requireAdmin(s.handleScanStatus))
 	// what a scan could not place: files this library's type cannot take, and
 	// items no provider could identify
-	mux.HandleFunc("GET /api/libraries/{id}/issues", s.requireAuth(s.handleLibraryIssues))
+	mux.HandleFunc("GET /api/libraries/{id}/issues", s.requireAdmin(s.handleLibraryIssues))
 
 	// subtitle audit (which BDRip episodes have no subtitles at all)
 	mux.HandleFunc("POST /api/libraries/{id}/subtitle-audit", s.requireAdmin(s.handleSubtitleAuditStart))
 	mux.HandleFunc("POST /api/libraries/{id}/subtitle-audit/stop", s.requireAdmin(s.handleSubtitleAuditStop))
-	mux.HandleFunc("GET /api/subtitle-audit", s.requireAuth(s.handleSubtitleAuditStatus))
+	mux.HandleFunc("GET /api/subtitle-audit", s.requireAdmin(s.handleSubtitleAuditStatus))
 
 	// items
 	mux.HandleFunc("GET /api/home", s.requireAuth(s.handleHome))
 	mux.HandleFunc("GET /api/items", s.requireAuth(s.handleListItems))
 	mux.HandleFunc("GET /api/items/{id}", s.requireAuth(s.handleItemDetail))
-	mux.HandleFunc("POST /api/items/{id}/refresh", s.requireAuth(s.handleItemRefresh))
+	// Re-identifying an item is an admin curation task, not a viewer action;
+	// it re-runs the metadata provider and can repoint an item, so it stays
+	// behind requireAdmin like the other library-maintenance endpoints.
+	mux.HandleFunc("POST /api/items/{id}/refresh", s.requireAdmin(s.handleItemRefresh))
 	mux.HandleFunc("GET /api/img/{id}/{kind}", s.handleImage)
 
-	// catalogue search → import (a bilibili title the library has not scanned)
-	mux.HandleFunc("GET /api/catalog/search", s.requireAuth(s.handleCatalogSearch))
-	mux.HandleFunc("POST /api/catalog/import", s.requireAuth(s.handleCatalogImport))
-	mux.HandleFunc("GET /api/import/{id}", s.requireAuth(s.handleImportStatus))
+	// catalogue search → import (a bilibili title the library has not scanned).
+	// Importing writes new items into a library, so it is curation, not playback.
+	mux.HandleFunc("GET /api/catalog/search", s.requireAdmin(s.handleCatalogSearch))
+	mux.HandleFunc("POST /api/catalog/import", s.requireAdmin(s.handleCatalogImport))
+	mux.HandleFunc("GET /api/import/{id}", s.requireAdmin(s.handleImportStatus))
 
 	// playback
 	mux.HandleFunc("GET /api/play/{id}", s.requireAuth(s.handlePlay))
 	mux.HandleFunc("GET /api/play/{id}/status", s.requireAuth(s.handlePlayStatus))
-	mux.HandleFunc("GET /api/browse/{id}", s.requireAuth(s.handleBrowse))
-	mux.HandleFunc("GET /api/browseplay/{id}", s.requireAuth(s.handleBrowsePlay))
+	// The file browser reaches every source's raw tree and lazily writes rows for
+	// what it plays. Whether it is reachable at all follows the owner's
+	// file-browser visibility setting.
+	mux.HandleFunc("GET /api/browse/{id}", s.requireFileAccess(s.handleBrowse))
+	mux.HandleFunc("GET /api/browseplay/{id}", s.requireFileAccess(s.handleBrowsePlay))
 	mux.HandleFunc("GET /api/stream/{id}", s.allowPlayerAuth(s.handleStream))
 	mux.HandleFunc("HEAD /api/stream/{id}", s.allowPlayerAuth(s.handleStream))
 	mux.HandleFunc("GET /api/hls/{id}/{rest...}", s.allowPlayerAuth(s.handleHLS))

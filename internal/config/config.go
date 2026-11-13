@@ -20,6 +20,18 @@ const DefaultTMDBProxy = "socks5://127.0.0.1:7890"
 // server expects (the phone has to reach it, not just the machine itself).
 const DefaultListen = "0.0.0.0"
 
+// File-browser visibility modes: who may open the raw 文件 browser (存储源 list
+// and the /browse route) and its API.
+const (
+	// FileBrowserAll opens file browsing to every signed-in user.
+	FileBrowserAll = "all"
+	// FileBrowserAdmin keeps it to administrators (the default). The public
+	// library remains the way everyone else watches.
+	FileBrowserAdmin = "admin"
+	// FileBrowserOff removes it entirely, entry points included.
+	FileBrowserOff = "off"
+)
+
 // Registration modes for self-service signup.
 const (
 	// RegistrationOpen lets a visitor register and sign in immediately.
@@ -323,6 +335,10 @@ type Config struct {
 	// matches one of these is skipped whole, at any depth below the library's
 	// root. Nothing inside it is listed, imported or probed.
 	ExcludeFolders []string `json:"exclude_folders"`
+	// FileBrowser decides who sees the raw file browser: FileBrowserAll,
+	// FileBrowserAdmin (default) or FileBrowserOff. It governs the 文件 entry
+	// points and the /api/sources, /api/browse and /api/browseplay endpoints.
+	FileBrowser string `json:"file_browser"`
 }
 
 // legacyExcludeKeywords is the stock file-name list older builds wrote into every
@@ -352,6 +368,34 @@ func (c *Config) dropLegacyExcludeDefaults() {
 // either immediately or pending an admin's approval.
 func (c *Config) RegistrationAllowed() bool {
 	return c.Users.Registration == RegistrationOpen || c.Users.Registration == RegistrationApproval
+}
+
+// FileBrowserAccessible reports whether the file browser itself may be opened.
+// "all" opens it to everyone; "off" closes it even for an admin; anything else
+// (including an unset value) means administrators only.
+func (c *Config) FileBrowserAccessible(admin bool) bool {
+	switch c.FileBrowser {
+	case FileBrowserAll:
+		return true
+	case FileBrowserOff:
+		return false
+	default:
+		return admin
+	}
+}
+
+// FileBrowserListed reports whether the 文件 entry points should be shown at all
+// for the given role: a viewer sees them only in "all" mode, an admin in "all"
+// and "admin" modes but never when the feature is off.
+func (c *Config) FileBrowserListed(admin bool) bool {
+	switch c.FileBrowser {
+	case FileBrowserOff:
+		return false
+	case FileBrowserAll:
+		return true
+	default:
+		return admin
+	}
 }
 
 func Defaults() *Config {
@@ -401,6 +445,7 @@ func Defaults() *Config {
 		ScanConcurrency: 4,
 		ExcludeKeywords: []string{},
 		ExcludeFolders:  []string{},
+		FileBrowser:     FileBrowserAdmin,
 	}
 }
 
@@ -509,6 +554,14 @@ func (c *Config) normalize() {
 	case RegistrationOpen, RegistrationApproval, RegistrationClosed:
 	default:
 		c.Users.Registration = RegistrationOpen
+	}
+	// Same rule for file-browser visibility: an unknown value falls back to the
+	// safe default (administrators only) rather than exposing the browser to
+	// everyone.
+	switch c.FileBrowser {
+	case FileBrowserAll, FileBrowserAdmin, FileBrowserOff:
+	default:
+		c.FileBrowser = FileBrowserAdmin
 	}
 	if c.Users.MinPassword < DefaultMinPassword {
 		c.Users.MinPassword = DefaultMinPassword

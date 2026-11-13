@@ -5,6 +5,7 @@ import AppIcon from './AppIcon.vue'
 import MediaRail from './MediaRail.vue'
 import PosterCard from './PosterCard.vue'
 import { api } from '../api.js'
+import { isAdmin } from '../auth.js'
 import { enrichSearchResults, searchSubtitle, searchTarget } from '../search.js'
 
 /**
@@ -120,6 +121,9 @@ async function run() {
 }
 
 async function runCatalog() {
+  // Catalogue search reaches bilibili and leads to importing new items; that is
+  // admin curation, so a viewer never triggers it (or sees the results section).
+  if (!isAdmin.value) { catalog.value = []; catalogWarning.value = ''; return }
   const term = q.value.trim()
   // One character matches half of bilibili; wait for a second one.
   if ([...term].length < 2) { catalog.value = []; catalogWarning.value = ''; return }
@@ -309,7 +313,7 @@ function onKeydown(e) {
 
             <!-- Catalogue results: on bilibili, not in any library. Clicking one
                  imports its whole series, with a live loading page. -->
-            <section v-if="q.trim() && (catalogLoading || catalog.length || catalogWarning)" class="catalog">
+            <section v-if="isAdmin && q.trim() && (catalogLoading || catalog.length || catalogWarning)" class="catalog">
               <div class="catalog-head">
                 <span class="catalog-label"><AppIcon name="cloud" :size="15" /> B 站片库</span>
                 <span class="tiny">未入库 · 点开自动入库</span>
@@ -353,7 +357,7 @@ function onKeydown(e) {
             <span><kbd>↵</kbd> 打开</span>
             <span><kbd>Esc</kbd> 关闭</span>
             <span class="spacer"></span>
-            <span v-if="q.trim()">{{ results.length }} 个库内结果<span v-if="catalog.length"> · {{ catalog.length }} 个未入库</span></span>
+            <span v-if="q.trim()">{{ results.length }} 个库内结果<span v-if="isAdmin && catalog.length"> · {{ catalog.length }} 个未入库</span></span>
           </div>
         </div>
       </div>

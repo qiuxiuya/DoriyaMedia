@@ -8,6 +8,7 @@ import SmartImage from '../components/SmartImage.vue'
 import SkeletonGrid from '../components/SkeletonGrid.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ScanIssuesDialog from '../components/ScanIssuesDialog.vue'
+import { isAdmin } from '../auth.js'
 
 const route = useRoute()
 const libId = computed(() => route.params.id)
@@ -29,6 +30,9 @@ const showIssues = ref(false)
 
 async function loadIssues() {
   if (!libId.value) return
+  // The issue list is a scan diagnostic and its endpoint is admin-only, so a
+  // viewer never asks for it (the button is hidden too).
+  if (!isAdmin.value) { issueCount.value = 0; return }
   try {
     const r = await api.get(`/api/libraries/${libId.value}/issues`)
     issueCount.value = r?.total || 0
@@ -129,6 +133,7 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
 
         <div class="right">
           <button
+            v-if="isAdmin"
             class="issue-btn" :class="{ alert: issueCount > 0 }" :title="issueCount > 0 ? '查看未能入库 / 刮削失败的文件' : '扫描问题'"
             @click="showIssues = true"
           >
@@ -205,9 +210,9 @@ function reset() { search.value = ''; type.value = isSeries.value ? 'show' : '';
         v-else
         icon="film"
         title="这个媒体库还没有内容"
-        text="到 设置 → 媒体库 执行一次扫描。"
+        :text="isAdmin ? '到 设置 → 媒体库 执行一次扫描。' : '媒体库尚未扫描入库,请让管理员完成媒体库配置。'"
       >
-        <router-link to="/settings" class="btn primary"><AppIcon name="scan" :size="16" /> 去设置里扫描</router-link>
+        <router-link v-if="isAdmin" to="/settings" class="btn primary"><AppIcon name="scan" :size="16" /> 去设置里扫描</router-link>
       </EmptyState>
     </div>
 

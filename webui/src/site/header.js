@@ -4,7 +4,9 @@ export const HEADER_ITEM_TYPES = {
   movies: { label: '电影', icon: 'film', sections: ['desktop', 'mobile', 'account'] },
   shows: { label: '剧集', icon: 'tv', sections: ['desktop', 'mobile', 'account'] },
   bangumi: { label: '追番', icon: 'bookmark', sections: ['desktop', 'mobile', 'account'] },
-  browse: { label: '文件', icon: 'folder', sections: ['desktop', 'mobile', 'account'] },
+  // 文件 is governed by the file-browser visibility setting rather than a fixed
+  // role: resolveHeaderItems hides it when the viewer may not open it.
+  browse: { label: '文件', icon: 'folder', sections: ['desktop', 'mobile', 'account'], fileBrowser: true },
   history: { label: '观看记录', icon: 'history', sections: ['account'] },
   libraries: { label: '媒体库下拉', icon: 'layers', sections: ['desktop'] },
   settings: { label: '设置', icon: 'settings', sections: ['desktop', 'mobile', 'account'], adminOnly: true },
@@ -24,6 +26,8 @@ function items(types) {
 }
 
 export function createHeaderRoles() {
+  // 文件 is offered to both roles; the file-browser visibility setting decides
+  // who actually sees it at render time. 设置 stays the admin's alone.
   const role = (admin) => ({
     desktop: items(['home', 'movies', 'shows', 'bangumi', 'browse', 'libraries']),
     mobile: items(['home', 'movies', 'shows', 'browse', ...(admin ? ['settings'] : [])]),
@@ -34,7 +38,7 @@ export function createHeaderRoles() {
 }
 
 /** Only local application routes; exclude protocol-relative and executable URLs. */
-export function safeHeaderTarget(target, isAdmin) {
+export function safeHeaderTarget(target, isAdmin, canBrowse = isAdmin) {
   if (typeof target !== 'string') return ''
   const to = target.trim()
   if (!to.startsWith('/') || /[\\\s\u0000-\u001f\u007f]/.test(to) || to.startsWith('//')) return ''
@@ -42,12 +46,19 @@ export function safeHeaderTarget(target, isAdmin) {
   try { path = decodeURIComponent(new URL(to, 'https://site.invalid').pathname) } catch { return '' }
   // Decoding also prevents encoded slashes or letters from disguising admin routes.
   if (/[\\\u0000-\u001f\u007f]/.test(path) || path.startsWith('//')) return ''
+  // 设置 is the admin's alone; 文件 follows the file-browser visibility setting.
+  // A menu link to a gated route would only land the visitor on a 403.
   if (!isAdmin && /^\/settings(?:\/|$)/i.test(path)) return ''
+  if (!canBrowse && /^\/browse(?:\/|$)/i.test(path)) return ''
   return to
 }
 
-/** Resolve against the actual logged-in role, never the role selected in the editor. */
-export function resolveHeaderItems(header, section, isAdmin, libraries = []) {
+/**
+ * Resolve against the actual logged-in role, never the role selected in the
+ * editor. `canBrowse` mirrors the server's file-browser visibility for this
+ * session: 文件 entries are dropped when the viewer may not open the browser.
+ */
+export function resolveHeaderItems(header, section, isAdmin, libraries = [], canBrowse = false) {
   const entries = header?.roles?.[isAdmin ? 'admin' : 'user']?.[section]
   if (!Array.isArray(entries)) return []
   const movie = libraries.find((lib) => lib.type === 'movie')
@@ -57,6 +68,7 @@ export function resolveHeaderItems(header, section, isAdmin, libraries = []) {
     if (typeof entry.type !== 'string' || !Object.hasOwn(HEADER_ITEM_TYPES, entry.type)) return []
     const spec = HEADER_ITEM_TYPES[entry.type]
     if (!spec.sections.includes(section) || (spec.adminOnly && !isAdmin)) return []
+    if (spec.fileBrowser && !canBrowse) return []
     let to = ''
     let action = ''
     switch (entry.type) {
@@ -70,7 +82,7 @@ export function resolveHeaderItems(header, section, isAdmin, libraries = []) {
       case 'libraries': action = 'libraries'; break
       case 'account': action = 'account'; break
       case 'logout': action = 'logout'; break
-      case 'custom': to = safeHeaderTarget(entry.to, isAdmin); if (!to) return []; break
+      case 'custom': to = safeHeaderTarget(entry.to, isAdmin, canBrowse); if (!to) return []; break
       default: return []
     }
     const copyGroup = section === 'account' && ['account', 'bangumi', 'history', 'settings', 'logout'].includes(entry.type) ? 'account' : 'nav'

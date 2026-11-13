@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, fmtSize } from '../api.js'
+import { isAdmin } from '../auth.js'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -149,9 +150,9 @@ function ext(name) {
 
         <EmptyState
           v-else icon="cloud" title="还没有存储源"
-          text="到设置里添加一个存储源后即可浏览。"
+          :text="isAdmin ? '到设置里添加一个存储源后即可浏览。' : '管理员还没有配置可浏览的存储源。'"
         >
-          <router-link to="/settings" class="btn primary"><AppIcon name="plus" :size="16" /> 添加存储源</router-link>
+          <router-link v-if="isAdmin" to="/settings" class="btn primary"><AppIcon name="plus" :size="16" /> 添加存储源</router-link>
         </EmptyState>
       </div>
     </template>

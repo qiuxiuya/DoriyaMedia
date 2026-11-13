@@ -166,10 +166,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, user *mode
 // handleMe tells the UI who it is talking to. The role decides whether the
 // settings backend is reachable at all, so the client can route on it.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, user *models.User) {
+	admin := user.IsAdmin()
 	writeJSON(w, 200, map[string]any{
 		"user":         user,
-		"is_admin":     user.IsAdmin(),
+		"is_admin":     admin,
 		"setup_needed": false,
+		// Whether this role should see the 文件 browser, and whether they may
+		// actually open it. The header/footer/router read these so a viewer is
+		// never shown an entry point that would 403.
+		"file_browser":          s.Cfg.FileBrowser,
+		"can_list_file_browser": s.Cfg.FileBrowserListed(admin),
 	})
 }
 
@@ -208,6 +214,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request, user *m
 		"scan_concurrency": s.Cfg.ScanConcurrency,
 		"exclude_keywords": s.Cfg.ExcludeKeywords,
 		"exclude_folders":  s.Cfg.ExcludeFolders,
+		"file_browser":     s.Cfg.FileBrowser,
 		"dev_web_dir":      s.Cfg.DevWebDir,
 		"tmdb":             s.Cfg.TMDB,
 		"bgm":              s.Cfg.BGM,
@@ -228,6 +235,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 		ScanConcurrency *int             `json:"scan_concurrency"`
 		ExcludeKeywords *[]string        `json:"exclude_keywords"`
 		ExcludeFolders  *[]string        `json:"exclude_folders"`
+		FileBrowser     *string          `json:"file_browser"`
 		DevWebDir       *string          `json:"dev_web_dir"`
 		TMDB            *configTMDB      `json:"tmdb"`
 		BGM             *configBGM       `json:"bgm"`
@@ -282,6 +290,17 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request, user *m
 	}
 	if req.ExcludeFolders != nil {
 		s.Cfg.ExcludeFolders = cleanKeywords(*req.ExcludeFolders)
+	}
+	if req.FileBrowser != nil {
+		switch *req.FileBrowser {
+		case config.FileBrowserAll, config.FileBrowserAdmin, config.FileBrowserOff:
+			s.Cfg.FileBrowser = *req.FileBrowser
+		default:
+			// Keeping an unknown value would silently fall back to the default
+			// on the next load, leaving the admin believing their choice stuck.
+			fail(w, 400, "文件可见性只能是 all / admin / off")
+			return
+		}
 	}
 	if req.DevWebDir != nil {
 		s.Cfg.DevWebDir = *req.DevWebDir

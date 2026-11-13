@@ -56,7 +56,10 @@ function copyHint(section, type) {
 }
 function setTarget(section, index, event) {
   const input = event.target
-  const target = safeHeaderTarget(input.value, role.value === 'admin')
+  // The editor validates defaults per role, not the live file-browser setting,
+  // so /browse is left alone here (it may be visible to anyone in 都可见 mode);
+  // only /settings is a hard admin route.
+  const target = safeHeaderTarget(input.value, role.value === 'admin', true)
   if (!target) {
     input.setCustomValidity(role.value === 'admin'
       ? '请输入以 / 开头的有效站内链接，不支持外部网址。'

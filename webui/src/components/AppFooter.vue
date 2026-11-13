@@ -4,6 +4,7 @@ import AppIcon from './AppIcon.vue'
 import SiteText from './SiteText.vue'
 import { site, listOf } from '../site/store.js'
 import { accentVars } from '../site/schema.js'
+import { isAdmin, canBrowseFiles } from '../auth.js'
 
 // version comes from the server's own /api/system/info, so the footer reports
 // the running binary rather than a number baked into the bundle.
@@ -12,7 +13,20 @@ defineProps({
   version: { type: String, default: '' },
 })
 
-const columns = computed(() => listOf('footer.columns'))
+// 设置 is the admin's alone and 文件 follows the file-browser visibility; the
+// default footer (and any authored link) points at both, so a session that may
+// not use a route simply does not see the link rather than landing on a 403.
+const gated = (to) => {
+  if (typeof to !== 'string') return false
+  const p = to.trim()
+  if (/^\/settings(?:\/|$)/i.test(p)) return !isAdmin.value
+  if (/^\/browse(?:\/|$)/i.test(p)) return !canBrowseFiles.value
+  return false
+}
+const columns = computed(() => listOf('footer.columns')
+  .map((col) => ({ ...col, links: (col.links || []).filter((l) => !gated(l.to)) }))
+  // A column whose every link was gated would render a bare heading.
+  .filter((col) => col.links.length))
 const capabilities = computed(() => listOf('footer.capabilities.items'))
 // The footer wears the same accent as the login page; nothing else is restyled.
 const footStyle = computed(() => accentVars(site.doc.site.accent))

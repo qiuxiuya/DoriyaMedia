@@ -9,6 +9,7 @@ import HeroBillboard from '../components/HeroBillboard.vue'
 import SmartImage from '../components/SmartImage.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonGrid from '../components/SkeletonGrid.vue'
+import { isAdmin, canBrowseFiles } from '../auth.js'
 
 const home = ref(null)
 const error = ref('')
@@ -99,11 +100,13 @@ function libPath(lib) {
         v-else-if="empty"
         icon="sparkles"
         title="媒体库还是空的"
-        text="添加存储源 → 创建媒体库 → 扫描;也可以直接浏览文件点开即播。"
+        :text="isAdmin ? '添加存储源 → 创建媒体库 → 扫描;也可以直接浏览文件点开即播。'
+          : canBrowseFiles ? '媒体库还没有内容,可以让管理员扫描入库,或直接浏览文件点开即播。'
+          : '媒体库还没有内容,请让管理员先完成媒体库的扫描入库。'"
       >
-        <div class="row-flex wrap" style="justify-content:center">
-          <router-link to="/settings" class="btn primary"><AppIcon name="plus" :size="16" /> 添加存储源</router-link>
-          <router-link to="/browse" class="btn"><AppIcon name="folder" :size="16" /> 直接浏览文件</router-link>
+        <div v-if="isAdmin || canBrowseFiles" class="row-flex wrap" style="justify-content:center">
+          <router-link v-if="isAdmin" to="/settings" class="btn primary"><AppIcon name="plus" :size="16" /> 添加存储源</router-link>
+          <router-link v-if="canBrowseFiles" to="/browse" class="btn"><AppIcon name="folder" :size="16" /> 直接浏览文件</router-link>
         </div>
       </EmptyState>
 
@@ -189,7 +192,8 @@ function libPath(lib) {
         <section v-if="libraries.length" v-reveal.stagger class="section">
           <div class="section-head">
             <h2 class="section-title">我的媒体库</h2>
-            <router-link v-if="$route.path !== '/settings'" to="/settings" class="more">
+            <!-- 管理 points at the admin backend; a viewer has no business there. -->
+            <router-link v-if="isAdmin && $route.path !== '/settings'" to="/settings" class="more">
               管理 <AppIcon name="chevronRight" :size="14" />
             </router-link>
           </div>

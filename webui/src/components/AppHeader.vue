@@ -6,7 +6,7 @@ import SearchOverlay from './SearchOverlay.vue'
 import AccountDialog from './AccountDialog.vue'
 import SiteText from './SiteText.vue'
 import { api } from '../api.js'
-import { logout as signOut } from '../auth.js'
+import { logout as signOut, canBrowseFiles } from '../auth.js'
 import { site, ctx, hoverKey, toolbarOn } from '../site/store.js'
 import { fill } from '../site/schema.js'
 import { resolveHeaderItems } from '../site/header.js'
@@ -29,7 +29,8 @@ const isAdmin = computed(() => props.me?.role === 'admin')
 const solid = computed(() => !props.overlay || scrolled.value || menuOpen.value || browseOpen.value)
 
 // The editor changes documents, not permissions: resolve using the actual session.
-const menuItems = (section) => resolveHeaderItems(site.doc.header, section, isAdmin.value, libraries.value)
+// 文件 entries drop out when the session may not open the browser (server-set).
+const menuItems = (section) => resolveHeaderItems(site.doc.header, section, isAdmin.value, libraries.value, canBrowseFiles.value)
   .map((item) => ({ ...item, label: fill(item.label, ctx) }))
 const nav = computed(() => menuItems('desktop'))
 const tabs = computed(() => menuItems('mobile'))

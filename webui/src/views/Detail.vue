@@ -7,6 +7,7 @@ import BiliBadge from '../components/BiliBadge.vue'
 import SmartImage from '../components/SmartImage.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { toast } from '../toast.js'
+import { isAdmin } from '../auth.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -132,7 +133,7 @@ function seasonBackdrop(s) {
             <span v-for="g in genres" :key="g" class="badge plain">{{ g }}</span>
           </div>
 
-          <p class="overview" :class="{ open: expanded }">{{ item.overview || '暂无简介,可用右上角「重新识别」补全。' }}</p>
+          <p class="overview" :class="{ open: expanded }">{{ item.overview || (isAdmin ? '暂无简介,可用右上角「重新识别」补全。' : '暂无简介。') }}</p>
           <button v-if="(item.overview || '').length > 120" class="more-link" @click="expanded = !expanded">
             {{ expanded ? '收起' : '展开全部' }}
             <AppIcon :name="expanded ? 'chevronUp' : 'chevronDown'" :size="13" />
@@ -146,28 +147,31 @@ function seasonBackdrop(s) {
               <AppIcon name="play" :size="17" filled /> 开始观看
             </router-link>
 
-            <button class="btn lg" :disabled="busy" @click="refresh">
-              <AppIcon name="refresh" :size="16" :class="{ spin: busy }" /> {{ busy ? '识别中…' : '重新识别' }}
-            </button>
-
-            <div class="pin-wrap">
-              <button class="btn lg" :class="{ on: pinOpen }" @click="pinOpen = !pinOpen">
-                <AppIcon name="wand" :size="16" /> 按 ID 匹配
+            <!-- 重新识别 / 按 ID 匹配属于管理员维护操作,普通用户不显示 -->
+            <template v-if="isAdmin">
+              <button class="btn lg" :disabled="busy" @click="refresh">
+                <AppIcon name="refresh" :size="16" :class="{ spin: busy }" /> {{ busy ? '识别中…' : '重新识别' }}
               </button>
-              <Transition name="fade">
-                <div v-if="pinOpen" class="pin-pop">
-                  <div class="label">Bangumi 条目 ID</div>
-                  <div class="pin-row">
-                    <input v-model="pinBGM" class="input" placeholder="如 328609" inputmode="numeric" @keyup.enter="refreshBGM" />
-                    <button class="btn primary" :disabled="busy || !pinBGM" @click="refreshBGM">匹配</button>
+
+              <div class="pin-wrap">
+                <button class="btn lg" :class="{ on: pinOpen }" @click="pinOpen = !pinOpen">
+                  <AppIcon name="wand" :size="16" /> 按 ID 匹配
+                </button>
+                <Transition name="fade">
+                  <div v-if="pinOpen" class="pin-pop">
+                    <div class="label">Bangumi 条目 ID</div>
+                    <div class="pin-row">
+                      <input v-model="pinBGM" class="input" placeholder="如 328609" inputmode="numeric" @keyup.enter="refreshBGM" />
+                      <button class="btn primary" :disabled="busy || !pinBGM" @click="refreshBGM">匹配</button>
+                    </div>
+                    <div class="tiny">有歧义时填入 bgm.tv 条目 URL 里的数字即可指定。</div>
                   </div>
-                  <div class="tiny">有歧义时填入 bgm.tv 条目 URL 里的数字即可指定。</div>
-                </div>
-              </Transition>
-            </div>
+                </Transition>
+              </div>
+            </template>
           </div>
 
-          <div v-if="matched" class="matched tiny"><AppIcon name="link" :size="13" /> 已匹配 {{ matched }}</div>
+          <div v-if="isAdmin && matched" class="matched tiny"><AppIcon name="link" :size="13" /> 已匹配 {{ matched }}</div>
         </div>
       </div>
     </header>

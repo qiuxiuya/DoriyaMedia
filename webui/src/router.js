@@ -15,8 +15,14 @@ const routes = [
   { path: '/item/:id', component: () => import('./views/Detail.vue'), meta: { title: '详情', overlay: true } },
   { path: '/season/:id', component: () => import('./views/Season.vue'), meta: { title: '剧集', overlay: true } },
   // A catalogue hit being imported: its own live loading page, then the show.
-  { path: '/import/:sourceId/:seasonId', component: () => import('./views/Import.vue'), meta: { title: '入库' } },
-  { path: '/browse/:id?', component: () => import('./views/Browse.vue'), meta: { title: '文件' } },
+  // Importing writes new items into a library, so it is admin-only like the
+  // catalogue search that leads here.
+  { path: '/import/:sourceId/:seasonId', component: () => import('./views/Import.vue'), meta: { title: '入库', admin: true } },
+  // The raw file browser reaches every source tree and lazily writes rows for
+  // what it plays. Whether a viewer may open it is the owner's file-browser
+  // visibility setting (都可见 / 仅管理员 / 关闭), which the server reports on
+  // /api/auth/me as can_list_file_browser.
+  { path: '/browse/:id?', component: () => import('./views/Browse.vue'), meta: { title: '文件', fileBrowser: true } },
   { path: '/play/:fileId', component: () => import('./views/Player.vue'), meta: { fullscreen: true, title: '播放' } },
   // the profile menu's watch history: ?tab=watched shows only finished items
   { path: '/history', component: () => import('./views/History.vue'), meta: { title: '观看记录' } },
@@ -49,6 +55,10 @@ router.beforeEach(async (to) => {
   if (!user) return { path: '/login', query: { redirect: to.fullPath } }
   if (to.meta.admin && user.role !== 'admin') {
     toast.err('需要管理员权限')
+    return { path: '/' }
+  }
+  if (to.meta.fileBrowser && !user.can_list_file_browser) {
+    toast.err('文件浏览未开放')
     return { path: '/' }
   }
   return true

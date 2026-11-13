@@ -35,6 +35,18 @@ function openEditor(where, which) {
 const tab = ref(localStorage.getItem('dm:settings-tab') || 'sources')
 watch(tab, (v) => localStorage.setItem('dm:settings-tab', v))
 
+// Who may open the raw 文件 browser. "admin" is the server default; a missing
+// value (an older config) is treated as such below.
+const fileBrowserModes = [
+  { id: 'all', label: '都可见', hint: '所有登录用户都能浏览任意存储源并点开即播。' },
+  { id: 'admin', label: '仅管理员可见', hint: '只有管理员能看到并打开「文件」;普通用户只看媒体库。' },
+  { id: 'off', label: '关闭', hint: '完全关闭「文件」:任何人(含管理员)都看不到入口,也无法访问。' },
+]
+const fileBrowserHint = computed(() => {
+  const m = fileBrowserModes.find((x) => x.id === (cfg.value?.file_browser || 'admin'))
+  return m ? m.hint : ''
+})
+
 const sources = ref([])
 const libraries = ref([])
 const scanStates = ref([])
@@ -195,7 +207,9 @@ async function loadAll() {
     scanStates.value = (await api.get('/api/scan/status')) || []
     sys.value = await api.get('/api/system/info')
     const config = await api.get('/api/config')
-    cfg.value = { ...config, emby: { enabled: true, name: 'DoriyaMedia', icon: '', ...config.emby } }
+    // A config written before 文件可见性 existed has no file_browser field:
+    // fall back to the server's default (仅管理员) so the picker shows a value.
+    cfg.value = { ...config, file_browser: config.file_browser || 'admin', emby: { enabled: true, name: 'DoriyaMedia', icon: '', ...config.emby } }
     users.value = (await api.get('/api/admin/users')).users || []
     if (!libForm.value.sources[0].source_id && sources.value.length) {
       libForm.value.sources[0].source_id = sources.value[0].id
@@ -731,6 +745,7 @@ async function saveConfig() {
       // off, and the server writes exactly what it is given.
       exclude_keywords: (cfg.value.exclude_keywords || []).map((w) => String(w).trim()).filter(Boolean),
       exclude_folders: (cfg.value.exclude_folders || []).map((w) => String(w).trim()).filter(Boolean),
+      file_browser: cfg.value.file_browser || 'admin',
       tmdb: cfg.value.tmdb,
       bgm: cfg.value.bgm,
       playback: cfg.value.playback,
@@ -2058,6 +2073,36 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
 
             <div class="save-bar flat">
               <span class="tiny">关闭后 Emby 客户端无法访问,网页端不受影响。</span>
+              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title"><AppIcon name="folder" :size="16" /> 文件浏览</div>
+                <div class="tiny">「文件」入口(浏览任意存储源、点开即播)的可见范围。</div>
+              </div>
+            </div>
+
+            <div class="form-grid mt-4">
+              <div class="field wide">
+                <label>可见性</label>
+                <div class="segmented">
+                  <button
+                    v-for="m in fileBrowserModes" :key="m.id"
+                    :class="{ on: cfg.file_browser === m.id }"
+                    @click="cfg.file_browser = m.id"
+                  >{{ m.label }}</button>
+                </div>
+                <span class="hint">
+                  {{ fileBrowserHint }}
+                </span>
+              </div>
+            </div>
+
+            <div class="save-bar flat">
+              <span class="tiny">保存后立即生效,导航与页脚入口随之更新。</span>
               <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
             </div>
           </div>
