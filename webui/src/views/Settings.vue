@@ -54,6 +54,40 @@ const sys = ref(null)
 const cfg = ref(null)
 const error = ref('')
 
+// One save flow for the whole page: every card edits the same cfg object, so a
+// single floating bar (below) reflects "there are unsaved changes" and saves
+// them all at once. Comparing against a snapshot of the last server-confirmed
+// state — rather than a boolean flipped by each control — keeps the bar honest
+// when a card saves itself (注册方式, 测试发送) while other cards are still dirty.
+let configBaseline = ''
+const configDirty = computed(() => !!cfg.value && JSON.stringify(cfg.value) !== configBaseline)
+
+// Replace cfg with a server payload (initial load, or a post-save refresh) and
+// make that payload the new clean baseline.
+function applyConfig(config) {
+  // A config written before 文件可见性 existed has no file_browser field: fall
+  // back to the server's default (仅管理员) so the picker shows a value.
+  cfg.value = {
+    ...config,
+    file_browser: config.file_browser || 'admin',
+    emby: { enabled: true, name: 'DoriyaMedia', icon: '', ...config.emby },
+  }
+  configBaseline = JSON.stringify(cfg.value)
+}
+
+// A card that writes its own slice (users, smtp) has no reason to reload the
+// whole config — that would discard edits pending in other cards. Fold just
+// that slice into the baseline instead.
+function commitBaseline(keys) {
+  if (!configBaseline) return
+  try {
+    const base = JSON.parse(configBaseline)
+    const cur = JSON.parse(JSON.stringify(cfg.value))
+    for (const k of keys) base[k] = cur[k]
+    configBaseline = JSON.stringify(base)
+  } catch {}
+}
+
 const embyIconFailed = ref(false)
 const embyIconPreview = computed(() => {
   const icon = (cfg.value?.emby?.icon || '').trim()
@@ -206,10 +240,7 @@ async function loadAll() {
     loadIssueCounts()
     scanStates.value = (await api.get('/api/scan/status')) || []
     sys.value = await api.get('/api/system/info')
-    const config = await api.get('/api/config')
-    // A config written before 文件可见性 existed has no file_browser field:
-    // fall back to the server's default (仅管理员) so the picker shows a value.
-    cfg.value = { ...config, file_browser: config.file_browser || 'admin', emby: { enabled: true, name: 'DoriyaMedia', icon: '', ...config.emby } }
+    applyConfig(await api.get('/api/config'))
     users.value = (await api.get('/api/admin/users')).users || []
     if (!libForm.value.sources[0].source_id && sources.value.length) {
       libForm.value.sources[0].source_id = sources.value[0].id
@@ -850,6 +881,9 @@ async function saveRegistration() {
     await api.put('/api/config', { users: cfg.value.users })
     const m = regModes.find((x) => x.id === cfg.value.users.registration)
     toast.ok(`注册方式已改为「${m ? m.label : cfg.value.users.registration}」`)
+    // This control saves itself on click; fold it into the baseline so the bar
+    // does not stay up for a change that is already on the server.
+    commitBaseline(['users'])
     await loadUsers()
   } catch (e) {
     toast.err(e.message)
@@ -907,6 +941,7 @@ async function testMail() {
   try {
     // Send whatever is in the form, so a fix can be tried before saving it.
     await api.put('/api/config', { smtp: cfg.value.smtp })
+    commitBaseline(['smtp'])
     mailResult.value = await api.post('/api/admin/mail/test', { to: mailTestTo.value })
   } catch (e) {
     mailResult.value = { ok: false, error: e.message }
@@ -1639,11 +1674,6 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               </div>
             </div>
           </div>
-
-          <div class="save-bar">
-            <span class="tiny">改动保存在 config.json,立即生效</span>
-            <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
-          </div>
         </section>
 
         <!-- ---------- users ---------- -->
@@ -1681,10 +1711,6 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 </span>
                 <span v-else class="hint">只影响新注册账号,<b>已有账号不受影响</b>。</span>
               </div>
-            </div>
-            <div class="save-bar flat">
-              <span class="tiny">改完记得保存</span>
-              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
             </div>
           </div>
 
@@ -1901,10 +1927,6 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               </div>
             </Transition>
 
-            <div class="save-bar flat">
-              <span class="tiny">测试发送会先保存当前填写的内容</span>
-              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
-            </div>
           </div>
 
           <!-- Cloudflare Turnstile -->
@@ -1949,10 +1971,6 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               </span>
             </div>
 
-            <div class="save-bar flat">
-              <span class="tiny">开启后立即生效,登录页会多出验证框</span>
-              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
-            </div>
           </div>
         </section>
 
@@ -2071,10 +2089,6 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
               </div>
             </div>
 
-            <div class="save-bar flat">
-              <span class="tiny">关闭后 Emby 客户端无法访问,网页端不受影响。</span>
-              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
-            </div>
           </div>
 
           <div class="card">
@@ -2099,11 +2113,6 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                   {{ fileBrowserHint }}
                 </span>
               </div>
-            </div>
-
-            <div class="save-bar flat">
-              <span class="tiny">保存后立即生效,导航与页脚入口随之更新。</span>
-              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
             </div>
           </div>
 
@@ -2136,14 +2145,20 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
                 </span>
               </div>
             </div>
-            <div class="save-bar flat">
-              <span class="tiny">保存后立即生效</span>
-              <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
-            </div>
           </div>
         </section>
       </div>
     </div>
+
+    <Transition name="fade">
+      <div v-if="configDirty" class="save-dock" role="status">
+        <span class="tiny"><AppIcon name="info" :size="15" /> 有未保存的配置改动</span>
+        <div class="row-flex" style="gap:10px">
+          <button class="btn sm" @click="loadAll">放弃</button>
+          <button class="btn primary" @click="saveConfig"><AppIcon name="check" :size="15" /> 保存配置</button>
+        </div>
+      </div>
+    </Transition>
 
     <ScanIssuesDialog
       v-if="issuesLibrary"
@@ -2432,6 +2447,31 @@ a.audit-show:hover { color: var(--brand); }
   z-index: 400;
 }
 .save-bar.flat { position: static; margin-top: var(--sp-4); background: var(--bg-0); box-shadow: none; }
+
+/* The one save bar for the whole page. It floats over the content and only
+   exists while cfg differs from what the server holds, so it never sits there
+   inviting a pointless write. */
+.save-dock {
+  position: fixed;
+  left: 50%;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5);
+  width: min(560px, calc(100vw - 32px));
+  padding: 11px 14px 11px 18px;
+  border-radius: var(--r-m);
+  background: rgba(16, 18, 23, 0.94);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--sh-3);
+  backdrop-filter: blur(18px);
+  z-index: 400;
+}
+.save-dock .tiny { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
+/* The mobile tab bar is fixed to the bottom edge with a higher z-index, so the
+   dock has to clear it instead of hiding behind it. */
+@media (max-width: 900px) {
+  .save-dock { bottom: calc(74px + env(safe-area-inset-bottom)); }
+}
 
 /* ---------- users ---------- */
 .reg-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--sp-3); margin-top: var(--sp-4); }

@@ -57,10 +57,10 @@ router.beforeEach(async (to) => {
     toast.err('需要管理员权限')
     return { path: '/' }
   }
-  if (to.meta.fileBrowser && !user.can_list_file_browser) {
-    toast.err('文件浏览未开放')
-    return { path: '/' }
-  }
+  // Entry points (header, footer, home) are already hidden when the session may
+  // not open the browser, so a direct link is the only way here. Sending them
+  // home silently beats a toast that reads like a server failure.
+  if (to.meta.fileBrowser && !user.can_list_file_browser) return { path: '/' }
   return true
 })
 
