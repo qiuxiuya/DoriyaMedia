@@ -28,7 +28,8 @@ DoriyaMedia 提供面向第三方 Emby 客户端的基础服务端协议适配�
 - 媒体库、电影、剧集、季、单集、详情、搜索、分页、基本排序、最近入库、继续观看、下一集、条目数量。`MediaTypes` 生效：过滤为 `Audio`（继续收听/有声读物）时返回空集合，只有 `Video` 返回影片和单集，避免客户端两行首页重复显示同一批进度。详情导航的 `Ancestors` 返回由近及远的父条目及媒体库；`ThemeSongs`、`ThemeVideos`、`CriticReviews` 返回空集合，不代表支持主题媒体或影评数据。内部文件浏览缓存库不出现在媒体列表。
 - 搜索框：`GET /Search/Hints` 返回 `SearchHints`/`TotalRecordCount`/`StartIndex`，官方客户端搜索页和搜索联想都走这个接口（它们不会先用 `/Items?SearchTerm=`）。提示项含 `ItemId`、`Name`、`MatchedTerm`、`Type`、`MediaType`、`IsFolder`、`PrimaryImageTag`、`ProductionYear`、`IndexNumber`/`ParentIndexNumber`、单集的 `SeriesName` 和 `RunTimeTicks`。默认只搜电影、剧集、单集，`IncludeItemTypes` 可收窄；`Limit` 默认 30（上限 100），`Limit=0` 按默认处理；空关键词返回空集合，不返回整个媒体库；`ParentId` 可限定到某媒体库或某部剧的子树。`PrimaryImageTag` 只在条目自己有主图时下发，且与 `/Items/{id}/Images/Primary` 接受的签名一致，季/单集不借用父级海报的 tag，客户端显示占位图而不是坏图。`/Items?SearchTerm=` 与搜索框共用同一匹配规则，命中顺序为完全同名、前缀、其余。关键词只匹配标题与原题，不匹配演员、类型、简介或拼音；查询是繁体时会再按简体匹配一次（媒体库标题多来自 TMDB/Bangumi，为简体），反方向（简体查询命中繁体库内标题）尚未支持。
 - 主海报、背景图、单集缩略图。官方图片 URL 不携带登录 Token，因此 DTO 图像 tag 使用绑定条目 ID、图像种类和缓存文件名的 HMAC；图片 GET/HEAD 可凭有效 tag 获取对应图片，或使用有效登录会话。无凭证/伪造 tag 不开放图片枚举，tag 不能授权资料或媒体流。tag 没有独立期限；更换缓存文件名或站点 Secret 后失效。支持查询串 tag、索引 0 和官方完整路径式图片 URL；尺寸/格式等变换目前仍返回原图。无原始海报的条目不会凭空生成真实海报。
-- `/Users/{user}/Items/Latest` 默认按番剧分组（`GroupItems=true`）：同剧跨季单集只返回一个 Series，按最新匹配子集排序，`ChildCount` 为匹配集数；先分组再分页。显式 `GroupItems=false` 返回单集，不影响普通单集列表与继续观看。
+- 番剧/季的「剩余集数」角标：列表、详情、最近入库的 Series/Season DTO 都下发 `RecursiveItemCount`（该子树下的单集总数）与 `UserData.UnplayedItemCount`（未看单集数），官方客户端据此在封面上画角标。单集计入「已看」的条件是该集所有文件都已标记已看，与 `UserData.Played` 使用同一规则，因此网格和详情页不会给出不一致的剩余数；尚无文件的单集（未扫描入库的预告集）仍计入剩余。整季看完时同时把 `UserData.Played` 置为 `true`、`PlayedPercentage` 置为 100。没有单集的空文件夹两个字段都不下发，避免「0 剩余」被客户端读成已看完。一页只追加一条递归查询，不随条目数线性增长。
+- `/Users/{user}/Items/Latest` 默认按番剧分组（`GroupItems=true`）：同剧跨季单集只返回一个 Series，按最新匹配子集排序，`ChildCount` 为本次匹配的集数（不是全剧集数，全剧数量见 `RecursiveItemCount`）；先分组再分页。显式 `GroupItems=false` 返回单集，不影响普通单集列表与继续观看。
 - 单集的 `Primary` 只在存在已缓存的单集截图（`StillPath`，来自 TMDB 或同目录图片）时返回，`Thumb` 可访问同一截图；签名和实际图片文件保持一致。没有单集截图时不继承父季/番剧海报：否则一部剧里每集封面都是同一张合集海报。此时不返回单集 `Primary`，由客户端显示占位图；`SeriesPrimaryImageTag` 仍供详情页头部使用。季仍可继承番剧海报。不自动从视频截帧，也不伪造每集图片。
 - 多文件版本的 MediaSourceId 选择；播放前复用媒体引擎探测，提供时长、编码、音视频轨和可转换字幕轨。
 - 本地 Range/HEAD、远程直链和代理播放复用原有驱动；字幕复用现有 WebVTT 转换。
@@ -74,7 +75,7 @@ URL 中的 api_key 和签名是凭证，不能公开分享；部署代理时应�
 
 ## 验证
 
-自动化测试覆盖发现前缀/大小写、重复 `/emby` 前缀、Token 形式、会话撤销/过期/禁用、限流、媒体层级、分页计数、搜索参数绑定、搜索框（`Search/Hints` 提示字段与图片 tag、类型过滤、分页与总数、空关键词、媒体库作用域、繁体关键词折叠、未认证 401）、多用户隔离、版本归属、Range/HEAD、字幕（外链为服务器根相对路径）、进度、继续观看移除/恢复（Emby 与网页一致）、媒体库封面（动态/静态、上传、自动获取、清除、tag 作用域）、已看/整季批量已看/下一集、收藏、用户配置持久化、缩略图集合为空、直播与后台空集合、隐藏库过滤及原网页路由。
+自动化测试覆盖发现前缀/大小写、重复 `/emby` 前缀、Token 形式、会话撤销/过期/禁用、限流、媒体层级、分页计数、搜索参数绑定、搜索框（`Search/Hints` 提示字段与图片 tag、类型过滤、分页与总数、空关键词、媒体库作用域、繁体关键词折叠、未认证 401）、多用户隔离、版本归属、Range/HEAD、字幕（外链为服务器根相对路径）、进度、继续观看移除/恢复（Emby 与网页一致）、媒体库封面（动态/静态、上传、自动获取、清除、tag 作用域）、剩余集数角标（跨季递归统计、多文件单集的已看判定、空文件夹不下发计数）、已看/整季批量已看/下一集、收藏、用户配置持久化、缩略图集合为空、直播与后台空集合、隐藏库过滤及原网页路由。
 
 ```sh
 go test ./...

@@ -66,6 +66,7 @@ func (s *Server) embyLatest(w http.ResponseWriter, r *http.Request, u *models.Us
 		end = len(ids)
 	}
 	out := []map[string]any{}
+	loaded := []*models.Item{}
 	for _, id := range ids[start:end] {
 		it, err := s.Store.ItemByID(id)
 		if err != nil {
@@ -74,10 +75,14 @@ func (s *Server) embyLatest(w http.ResponseWriter, r *http.Request, u *models.Us
 		}
 		dto := s.embyItem(it, u, r)
 		if group && it.Type == "show" {
+			// ChildCount is this row's matched-episode count; the badge needs the
+			// whole series, which embyApplyFolderCounts adds below.
 			dto["ChildCount"] = counts[id]
 		}
+		loaded = append(loaded, it)
 		out = append(out, dto)
 	}
+	s.embyApplyFolderCounts(loaded, out, u)
 	writeJSON(w, 200, out)
 }
 

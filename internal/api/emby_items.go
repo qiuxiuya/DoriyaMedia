@@ -237,17 +237,11 @@ func (s *Server) embyItemDetail(w http.ResponseWriter, r *http.Request, u *model
 		return
 	}
 	dto := s.embyItem(it, u, r)
-	// A show or season is watched only when all of its episodes are. Computing
-	// this per detail request keeps list pages cheap while still giving the
-	// detail header the tick the official clients look for.
+	// A show or season is watched only when all of its episodes are. The same
+	// counts feed the poster badge on the grid, so the detail header and the
+	// shelf can never report different remaining counts for one series.
 	if it.Type == "show" || it.Type == "season" {
-		if files, err := s.embyDescendantFiles(it.ID, map[int64]bool{it.ID: true}, 0); err == nil && len(files) > 0 {
-			ud := dto["UserData"].(map[string]any)
-			ud["Played"] = s.embyFolderPlayed(u.ID, files)
-			if ud["Played"] == true {
-				ud["PlayedPercentage"] = 100.0
-			}
-		}
+		s.embyApplyFolderCounts([]*models.Item{it}, []map[string]any{dto}, u)
 	}
 	embyWriteDetail(w, r, dto)
 }
@@ -483,14 +477,19 @@ func (s *Server) embyList(w http.ResponseWriter, r *http.Request, u *models.User
 		return
 	}
 	out := []map[string]any{}
+	loaded := make([]*models.Item, 0, len(ids))
 	for _, id := range ids {
 		it, err := s.Store.ItemByID(id)
 		if err != nil {
 			fail(w, 500, "Cannot load item")
 			return
 		}
+		loaded = append(loaded, it)
 		out = append(out, s.embyItem(it, u, r))
 	}
+	// The poster badge on a series or season is driven by these counts; without
+	// them the grid shows a bare cover with no "12 unwatched" hint.
+	s.embyApplyFolderCounts(loaded, out, u)
 	if strings.HasSuffix(r.URL.Path, "/latest") {
 		writeJSON(w, 200, out)
 	} else {
