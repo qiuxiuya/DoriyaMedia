@@ -309,19 +309,31 @@ type TMDBTVDetail struct {
 	FirstAirDate    string  `json:"first_air_date"`
 	VoteAverage     float64 `json:"vote_average"`
 	NumberOfSeasons int     `json:"number_of_seasons"`
+	// Seasons carries each season's episode count. A release that numbers a show
+	// across its whole run needs those counts to know where a season starts.
+	Seasons []TMDBSeasonSummary `json:"seasons"`
 	TMDBGenres
 }
 
-type TMDBSeasonDetail struct {
+// TMDBSeasonSummary is one entry of a show's season list.
+type TMDBSeasonSummary struct {
 	SeasonNumber int `json:"season_number"`
-	Episodes     []struct {
-		EpisodeNumber int     `json:"episode_number"`
-		Name          string  `json:"name"`
-		Overview      string  `json:"overview"`
-		StillPath     string  `json:"still_path"`
-		AirDate       string  `json:"air_date"`
-		VoteAverage   float64 `json:"vote_average"`
-	} `json:"episodes"`
+	EpisodeCount int `json:"episode_count"`
+}
+
+type TMDBSeasonDetail struct {
+	SeasonNumber int           `json:"season_number"`
+	Episodes     []TMDBEpisode `json:"episodes"`
+}
+
+// TMDBEpisode is one episode of a season.
+type TMDBEpisode struct {
+	EpisodeNumber int     `json:"episode_number"`
+	Name          string  `json:"name"`
+	Overview      string  `json:"overview"`
+	StillPath     string  `json:"still_path"`
+	AirDate       string  `json:"air_date"`
+	VoteAverage   float64 `json:"vote_average"`
 }
 
 func (t *TMDBClient) MovieDetail(ctx context.Context, id int) (*TMDBMovieDetail, error) {

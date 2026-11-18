@@ -204,8 +204,13 @@ func ParseName(filename string) Parsed {
 	// Only a *video* extension is removed. The last dot in a name is often not
 	// one: "[弹丸论破][S2.5][狛枝凪斗与世界的破坏者]" is a folder, and cutting at the
 	// ".5" left "[弹丸论破][S2" — a film called "S2". "Dr. Stone" became "Dr".
-	base := filename
-	if IsVideo(base) {
+	//
+	// Every trailing video extension goes, not just one: a double extension
+	// ("…[1080P][x264_AAC].mp4.mp4") is common on shared drives, and stripping
+	// one left "…x264_AAC].mp4", whose leftover ".mp4" was then read as the
+	// show's name — every episode of such a season came out titled "mp4".
+	base := strings.TrimSpace(filename)
+	for IsVideo(base) {
 		base = base[:strings.LastIndex(base, ".")]
 	}
 	original := base

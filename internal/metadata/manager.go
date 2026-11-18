@@ -45,6 +45,31 @@ type Manager struct {
 	// seasons of one show entering the identify pass together share a single
 	// answer instead of asking Bangumi once each.
 	bgmFetch map[int]*bgmEpisodesCall
+
+	// seasonMu guards the TMDB season data. Two things are cached here: each
+	// season's episode count (converting a release's whole-run episode number
+	// into a season-relative one needs it) and each season's episode list. Every
+	// episode of a show asks for both, so a 24-episode season would otherwise
+	// download its own list 24 times.
+	seasonMu    sync.Mutex
+	seasonCts   map[int]map[int]int
+	seasonCalls map[int]*tmdbSeasonsCall
+	seasonEps   map[string]*TMDBSeasonDetail
+	seasonFts   map[string]*tmdbSeasonFetch
+}
+
+// tmdbSeasonsCall is one in-flight season-count request others wait on, so a
+// show's episodes identified in parallel spend a single request between them.
+type tmdbSeasonsCall struct {
+	done   chan struct{}
+	counts map[int]int
+}
+
+// tmdbSeasonFetch is one in-flight season-episode-list request.
+type tmdbSeasonFetch struct {
+	done chan struct{}
+	sd   *TMDBSeasonDetail
+	err  error
 }
 
 // bgmEpisodesCall is one in-flight episode-list request others wait on.
@@ -509,6 +534,9 @@ func (m *Manager) EnrichLibrary(lib *models.Library, report func(done, total int
 		return
 	}
 	defer func() { m.listMu.Lock(); m.listCache, m.listFetch = nil, nil; m.listMu.Unlock() }()
+	// Season data is per run, not per process: an airing show gains episodes, and
+	// a later scan must see the new list rather than this one's.
+	defer m.resetSeasonCache()
 
 	switch lib.Type {
 	case "series":
@@ -516,6 +544,14 @@ func (m *Manager) EnrichLibrary(lib *models.Library, report func(done, total int
 	default:
 		m.enrichMovies(ctx, drv, lib, say)
 	}
+}
+
+// resetSeasonCache drops the per-run TMDB season data, so a scan that finds new
+// episodes asks for the current lists instead of reusing the previous scan's.
+func (m *Manager) resetSeasonCache() {
+	m.seasonMu.Lock()
+	m.seasonCts, m.seasonEps = nil, nil
+	m.seasonMu.Unlock()
 }
 
 // EnrichFiles identifies only the movies/episodes represented by files and the
@@ -526,6 +562,7 @@ func (m *Manager) EnrichFiles(lib *models.Library, files []models.MediaFile, rep
 	m.drivers = nil
 	m.drvMu.Unlock()
 	defer func() { m.listMu.Lock(); m.listCache, m.listFetch = nil, nil; m.listMu.Unlock() }()
+	defer m.resetSeasonCache()
 	if lib == nil || len(files) == 0 {
 		return
 	}
@@ -900,35 +937,203 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 		}
 	}
 	if show.TMDBID > 0 && m.tmdb().Enabled() {
-		throttle("tmdb")
-		sd, err := m.tmdb().TVSeason(ctx, show.TMDBID, season.Season)
-		if err == nil && sd != nil {
-			for _, e := range sd.Episodes {
-				if e.EpisodeNumber == ep.Episode {
-					// A name the source gave this episode is kept; TMDB is only
-					// asked for the still in that case.
-					if !restoreOnly {
-						ep.Name = orDefaultStr(e.Name, ep.Name)
-						ep.Overview = e.Overview
-						ep.AirDate = e.AirDate
-					}
-					if e.StillPath != "" {
-						if name := m.saveTMDBImage(ctx, ep.ID, "still", e.StillPath, "w300"); name != "" {
-							ep.StillPath = name
-						}
-					}
-					_ = m.Store.UpdateItemMeta(ep)
-					return
+		if e := m.findTMDBEpisode(ctx, show.TMDBID, season.Season, ep.Episode); e != nil {
+			// A name the source gave this episode is kept; TMDB is only asked
+			// for the still in that case.
+			if !restoreOnly {
+				ep.Name = orDefaultStr(e.Name, ep.Name)
+				ep.Overview = e.Overview
+				ep.AirDate = e.AirDate
+			}
+			if e.StillPath != "" {
+				if name := m.saveTMDBImage(ctx, ep.ID, "still", e.StillPath, "w300"); name != "" {
+					ep.StillPath = name
 				}
 			}
+			_ = m.Store.UpdateItemMeta(ep)
 		}
 	}
+}
+
+// findTMDBEpisode locates this file's episode in a TMDB season.
+//
+// The obvious match — the number in the file name equal to TMDB's
+// episode_number — is only right for a release that numbers each season from 1.
+// Anime releases commonly number a show across its whole run, so season 3's
+// first episode is "[49]": TMDB's season 3 has episodes 1..12 and an exact match
+// never happens, which cost such an episode its name, its still and its air
+// date. The season's own numbers are tried first, then the whole-run numbering
+// converted with the earlier seasons' episode counts (49 - 24 - 24 = 1).
+//
+// A number that fits neither is not forced onto a neighbouring episode: an
+// unrelated number is more likely a file this season does not have than a
+// shifted one, and naming it after a random episode would be worse than leaving
+// the placeholder.
+func (m *Manager) findTMDBEpisode(ctx context.Context, tvID, seasonNum, epNum int) *TMDBEpisode {
+	if seasonNum <= 0 || epNum <= 0 {
+		return nil
+	}
+	sd := m.tmdbSeason(ctx, tvID, seasonNum)
+	if sd == nil {
+		return nil
+	}
+	if e := pickEpisode(sd.Episodes, epNum); e != nil {
+		return e
+	}
+	offset, ok := m.tmdbSeasonOffset(ctx, tvID, seasonNum)
+	if !ok || offset <= 0 {
+		return nil
+	}
+	return pickEpisode(sd.Episodes, epNum-offset)
+}
+
+// pickEpisode returns the episode with the given number, or nil. The number has
+// to be inside the season TMDB actually lists.
+func pickEpisode(eps []TMDBEpisode, num int) *TMDBEpisode {
+	if num <= 0 {
+		return nil
+	}
+	for i := range eps {
+		if eps[i].EpisodeNumber == num {
+			return &eps[i]
+		}
+	}
+	return nil
+}
+
+// tmdbSeasonOffset is how many episodes air before this season: the sum of the
+// counts of every earlier numbered season. Specials (season 0) are excluded —
+// they are not part of a release's running count.
+func (m *Manager) tmdbSeasonOffset(ctx context.Context, tvID, seasonNum int) (int, bool) {
+	return seasonOffset(m.tmdbSeasonCounts(ctx, tvID), seasonNum)
+}
+
+// seasonOffset converts a season number into the number of episodes that air
+// before it, given each season's episode count. ok is false when the counts
+// cannot answer the question, so the caller leaves the episode alone rather than
+// applying a wrong offset.
+func seasonOffset(counts map[int]int, seasonNum int) (int, bool) {
+	if counts == nil || seasonNum <= 0 {
+		return 0, false
+	}
+	total, seen := 0, false
+	for n, c := range counts {
+		if n <= 0 || n >= seasonNum {
+			continue
+		}
+		total += c
+		seen = true
+	}
+	if !seen && seasonNum > 1 {
+		// A show whose earlier seasons TMDB lists with no count cannot be
+		// converted; guessing zero would name every episode of a later season
+		// after season 1's.
+		return 0, false
+	}
+	return total, true
+}
+
+// tmdbSeasonCounts returns each numbered season's episode count for one show,
+// cached for the run. One request serves every episode of the show.
+func (m *Manager) tmdbSeasonCounts(ctx context.Context, tvID int) map[int]int {
+	m.seasonMu.Lock()
+	if m.seasonCts == nil {
+		m.seasonCts = map[int]map[int]int{}
+	}
+	if c, ok := m.seasonCts[tvID]; ok {
+		m.seasonMu.Unlock()
+		return c
+	}
+	if call, ok := m.seasonCalls[tvID]; ok {
+		m.seasonMu.Unlock()
+		select {
+		case <-call.done:
+			return call.counts
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	if m.seasonCalls == nil {
+		m.seasonCalls = map[int]*tmdbSeasonsCall{}
+	}
+	call := &tmdbSeasonsCall{done: make(chan struct{})}
+	m.seasonCalls[tvID] = call
+	m.seasonMu.Unlock()
+
+	throttle("tmdb")
+	var counts map[int]int
+	if d, err := m.tmdb().TVDetail(ctx, tvID); err == nil && d != nil && len(d.Seasons) > 0 {
+		counts = make(map[int]int, len(d.Seasons))
+		for _, s := range d.Seasons {
+			counts[s.SeasonNumber] = s.EpisodeCount
+		}
+	}
+
+	m.seasonMu.Lock()
+	delete(m.seasonCalls, tvID)
+	if counts != nil {
+		m.seasonCts[tvID] = counts
+	}
+	call.counts = counts
+	close(call.done)
+	m.seasonMu.Unlock()
+	return counts
+}
+
+// tmdbSeason lists one season's episodes, cached for the run. A 12-episode
+// season downloaded once serves every episode of it instead of once each.
+func (m *Manager) tmdbSeason(ctx context.Context, tvID, seasonNum int) *TMDBSeasonDetail {
+	key := fmt.Sprintf("%d|%d", tvID, seasonNum)
+	m.seasonMu.Lock()
+	if m.seasonEps == nil {
+		m.seasonEps = map[string]*TMDBSeasonDetail{}
+	}
+	if sd, ok := m.seasonEps[key]; ok {
+		m.seasonMu.Unlock()
+		return sd
+	}
+	if f, ok := m.seasonFts[key]; ok {
+		m.seasonMu.Unlock()
+		select {
+		case <-f.done:
+			return f.sd
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	if m.seasonFts == nil {
+		m.seasonFts = map[string]*tmdbSeasonFetch{}
+	}
+	f := &tmdbSeasonFetch{done: make(chan struct{})}
+	m.seasonFts[key] = f
+	m.seasonMu.Unlock()
+
+	throttle("tmdb")
+	sd, err := m.tmdb().TVSeason(ctx, tvID, seasonNum)
+	if err != nil {
+		sd = nil
+	}
+
+	m.seasonMu.Lock()
+	delete(m.seasonFts, key)
+	if sd != nil {
+		m.seasonEps[key] = sd
+	}
+	f.sd, f.err = sd, err
+	close(f.done)
+	m.seasonMu.Unlock()
+	return sd
 }
 
 // isPlaceholderEpisodeName reports whether an episode's name is still the one the
 // scan writes when the source gave no title of its own — "第 3 集", "Episode 3",
 // or nothing. Anything else was named by a source, by an nfo, or by an earlier
 // enrichment run, and is worth keeping.
+//
+// Release furniture counts as no title: a name like "mp4" is what the parser
+// left behind once a double extension ("…x264_AAC].mp4.mp4") was stripped down
+// to its remaining dot, and treating it as a real title kept the episode from
+// ever being looked up.
 func isPlaceholderEpisodeName(ep *models.Item) bool {
 	name := strings.TrimSpace(ep.Name)
 	if name == "" {
@@ -937,7 +1142,42 @@ func isPlaceholderEpisodeName(ep *models.Item) bool {
 	if name == fmt.Sprintf("第 %d 集", ep.Episode) {
 		return true
 	}
-	return strings.HasPrefix(name, "Episode ")
+	if strings.HasPrefix(name, "Episode ") {
+		return true
+	}
+	return isFurnitureName(name)
+}
+
+// furnitureWords are container, codec, source, resolution and language tokens: a
+// name made only of these says nothing about the episode.
+var furnitureWords = map[string]bool{
+	"mp4": true, "mkv": true, "avi": true, "mov": true, "ts": true, "m2ts": true,
+	"webm": true, "rmvb": true, "flv": true, "wmv": true, "strm": true,
+	"aac": true, "ac3": true, "eac3": true, "flac": true, "opus": true, "mp3": true,
+	"dts": true, "truehd": true, "x264": true, "x265": true, "h264": true, "h265": true,
+	"hevc": true, "avc": true, "av1": true, "vp9": true, "10bit": true, "8bit": true,
+	"chs": true, "cht": true, "chscj": true, "big5": true, "gb": true,
+	"web": true, "dl": true, "webdl": true, "webrip": true, "bluray": true,
+	"bdrip": true, "hdtv": true, "remux": true, "uhd": true, "hdr": true,
+	"4k": true, "8k": true, "1080p": true, "1080i": true, "720p": true,
+	"576p": true, "480p": true, "2160p": true,
+}
+
+// isFurnitureName reports whether every word of a name is release furniture.
+func isFurnitureName(name string) bool {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return r == ' ' || r == '.' || r == '_' || r == '-' || r == '[' || r == ']' ||
+			r == '(' || r == ')' || r == '+' || r == '/' || r == '&'
+	})
+	if len(words) == 0 {
+		return false
+	}
+	for _, w := range words {
+		if !furnitureWords[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // RefreshItem re-identifies one item, optionally pinning a TMDB id.
