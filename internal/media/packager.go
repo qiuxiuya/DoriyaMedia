@@ -25,7 +25,7 @@ import (
 //   - One process reads the source sequentially once, instead of re-seeking and
 //     re-reading a probe window for every 4-second segment.
 //
-// Verified recipe: docs/ios-safari-playback-redesign.md §11.3.1 (ffmpeg 8.0.1).
+// Packaging recipe verified with ffmpeg 8.0.1.
 // It encodes two traps that cost real debugging time:
 //
 //   - `-hls_fmp4_init_filename` resolves against the *process* working

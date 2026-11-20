@@ -21,7 +21,7 @@ import (
 // range-hardened proxy (P5), both already deliver zero-transcode playback for
 // every case this would serve — remuxing copies the streams, and the proxy streams
 // the original file with ranges. The one thing byte-range serving saves is the
-// packaged output on disk. See docs/ios-safari-playback-redesign.md §17.
+// packaged output on disk.
 
 // FragmentedSegment is one moof+mdat pair: a byte range of the file that a player
 // can fetch and decode on its own.
