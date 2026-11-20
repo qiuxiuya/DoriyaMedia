@@ -157,9 +157,8 @@ jobs:
           bin="build/doriyamedia"
           [ -f "build/doriyamedia.exe" ] && bin="build/doriyamedia.exe"
           cp "$bin" "$stage/"
+          # 使用说明已统一到 README，随程序打包供离线阅读
           cp README.md "$stage/"
-          # README 里链接到 docs/ 下的各篇说明，一起打包，离线也翻得到
-          cp -r docs "$stage/"
 
           if [ "$ARCHIVE" = "zip" ]; then
             (cd pkg && zip -qr "../dist/${base}.zip" "$base")
