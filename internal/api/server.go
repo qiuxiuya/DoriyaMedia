@@ -277,8 +277,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.requireAdmin(s.handlePutConfig))
 	mux.HandleFunc("POST /api/metadata/test", s.requireAdmin(s.handleMetadataTest))
 
-	// sources — the file browser's source list. Gated by the owner's
-	// file-browser visibility: "all" / "admin" / "off". Writes stay admin-only.
+	// Settings must remain usable even when the raw file browser is off.
+	mux.HandleFunc("GET /api/admin/sources", s.requireAdmin(s.handleListSources))
+	// The browser's list still follows file-browser visibility; writes stay admin-only.
 	mux.HandleFunc("GET /api/sources", s.requireFileAccess(s.handleListSources))
 	mux.HandleFunc("POST /api/sources", s.requireAdmin(s.handleCreateSource))
 	mux.HandleFunc("PUT /api/sources/{id}", s.requireAdmin(s.handleUpdateSource))

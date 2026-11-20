@@ -35,11 +35,11 @@ func toSourceDTO(src models.Source) sourceDTO {
 	return sourceDTO{Source: src, Config: cfg}
 }
 
-// maskSourceConfig blanks the credentials in a config. GET /api/sources is open
-// to every signed-in user (the browse page lists sources), so without this any
-// account on the server could read a WebDAV password, an OpenList token or a
-// bilibili cookie — and a bilibili cookie is a whole account, membership
-// included. Non-secret fields stay: the file browser shows a source's address.
+// maskSourceConfig blanks credentials for non-admin file-browser users when
+// file-browser visibility allows them to list sources. The admin settings list
+// uses the same handler, but retains credentials for editing. A bilibili cookie
+// grants access to the whole account, membership included. Non-secret fields
+// stay: the file browser shows a source's address.
 func maskSourceConfig(cfg models.SourceConfig) models.SourceConfig {
 	if cfg.WebDAVPass != "" {
 		cfg.WebDAVPass = maskedSecret

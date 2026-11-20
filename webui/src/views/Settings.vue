@@ -53,6 +53,7 @@ const scanStates = ref([])
 const sys = ref(null)
 const cfg = ref(null)
 const error = ref('')
+const loading = ref(true)
 
 // One save flow for the whole page: every card edits the same cfg object, so a
 // single floating bar (below) reflects "there are unsaved changes" and saves
@@ -234,8 +235,10 @@ function buildSourceConfig() {
 }
 
 async function loadAll() {
+  loading.value = true
+  error.value = ''
   try {
-    sources.value = (await api.get('/api/sources')) || []
+    sources.value = (await api.get('/api/admin/sources')) || []
     libraries.value = (await api.get('/api/libraries')) || []
     loadIssueCounts()
     scanStates.value = (await api.get('/api/scan/status')) || []
@@ -247,6 +250,8 @@ async function loadAll() {
     }
   } catch (e) {
     error.value = e.message
+  } finally {
+    loading.value = false
   }
 }
 
@@ -2204,9 +2209,13 @@ const anyScanning = computed(() => (scanStates.value || []).some((s) => s.runnin
   </div>
 
   <div v-else class="page">
-    <div class="set-skeleton">
+    <div v-if="loading" class="set-skeleton" role="status" aria-label="正在加载设置">
       <div class="sk" style="height:52px;border-radius:var(--r-m)" />
       <div class="sk mt-5" style="height:260px;border-radius:var(--r-l)" />
+    </div>
+    <div v-else class="card" role="alert">
+      <EmptyState icon="alert" title="设置加载失败" :text="error || '暂时无法读取设置,请重试。'" />
+      <button class="btn primary" @click="loadAll"><AppIcon name="refresh" :size="15" /> 重新加载</button>
     </div>
   </div>
 
