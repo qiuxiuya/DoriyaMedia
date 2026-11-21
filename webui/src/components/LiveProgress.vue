@@ -120,8 +120,8 @@ const levels = computed(() => {
   }
   if (p === 'identify') {
     return {
-      big: { label: '刮削与识别', value: st.done || 0, total: st.total || 0 },
-      small: { label: '已入库文件', value: st.files_found || 0, total: 0, indet: true },
+      big: { label: '元数据识别任务', value: st.done || 0, total: st.total || 0 },
+      small: { label: '已发现视频', value: st.files_found || 0, total: 0, indet: true },
     }
   }
   if (p === 'listing') {

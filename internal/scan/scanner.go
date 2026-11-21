@@ -269,6 +269,9 @@ func (sc *Scanner) runScanScoped(lib *models.Library, scope *scanScope) error {
 	}
 	prog.Update(func(st *models.ScanState) {
 		st.Phase = "organize"
+		// Directory callbacks fire before files are enumerated. Settle the
+		// final file count here, including files found in the last directory.
+		st.FilesFound = len(files)
 		st.Total = len(files)
 		st.Done = 0
 		st.Current = fmt.Sprintf("发现 %d 个视频文件,正在整理…", len(files))
@@ -323,17 +326,19 @@ func (sc *Scanner) runScanScoped(lib *models.Library, scope *scanScope) error {
 		prog.AddEvent("warn", fmt.Sprintf("%d 个文件未能入库或未刮到元数据", len(issues)))
 	}
 
-	// Settle the summary from the finished counters, then report it.
+	// Identify counts metadata tasks (shows plus episodes), not video files.
+	// Restore the walk's file counters before publishing the completed scan.
 	final, _ := prog.Snapshot(0)
 	prog.Update(func(st *models.ScanState) {
 		st.Phase = "done"
+		st.Done, st.Total = len(files), len(files)
 		if final.WalkErrs > 0 || final.FirstErr != "" {
 			st.Error = fmt.Sprintf("完成,但有 %d 个目录读取失败(%s)", final.WalkErrs, final.FirstErr)
 		} else {
 			st.Current = fmt.Sprintf("完成,共 %d 个视频文件", st.Total)
 		}
 	})
-	prog.AddEvent("meta", fmt.Sprintf("扫描完成:%d 个视频文件", final.Total))
+	prog.AddEvent("meta", fmt.Sprintf("扫描完成:%d 个视频文件", len(files)))
 	finish()
 	if scope != nil {
 		if sc.OnScannedFiles != nil {
@@ -975,26 +980,43 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 	// The lookups are memoised in idx.eps, so a season is queried once and the
 	// episodes created during this scan are visible to the next file without a
 	// second query.
-	loadSeasonEps := func(seasonID int64) {
+	loadSeasonEps := func(seasonID int64) error {
 		if idx.loaded[seasonID] {
-			return
+			return nil
 		}
-		idx.loaded[seasonID] = true
 		kids, err := sc.Store.ItemChildren(seasonID)
 		if err != nil {
-			// Not fatal: without the index the worst case is a duplicate episode
-			// row for a season whose episodes could not be listed, which the
-			// next scan's cleanup removes.
-			log.Printf("organize: list episodes of season %d failed: %v", seasonID, err)
-			return
+			// An unreadable index is not an empty season. Inserting anyway
+			// creates duplicate episode rows on transient database failures.
+			return fmt.Errorf("读取季 %d 的单集失败: %w", seasonID, err)
 		}
 		for _, it := range kids {
-			if it.Type == "episode" {
-				idx.eps[fmt.Sprintf("%d|%d", seasonID, it.Episode)] = it.ID
+			if it.Type != "episode" {
+				continue
 			}
+			key := fmt.Sprintf("%d|%d", seasonID, it.Episode)
+			if previous, exists := idx.eps[key]; exists {
+				oldFiles, err := sc.Store.FilesByItem(previous)
+				if err != nil {
+					return err
+				}
+				newFiles, err := sc.Store.FilesByItem(it.ID)
+				if err != nil {
+					return err
+				}
+				// Keep the playable row and its scraped metadata, not whichever
+				// empty duplicate happened to sort last by title.
+				if len(oldFiles) > 0 && len(newFiles) == 0 ||
+					(len(oldFiles) > 0) == (len(newFiles) > 0) && previous < it.ID {
+					continue
+				}
+			}
+			idx.eps[key] = it.ID
 		}
+		idx.loaded[seasonID] = true
+		return nil
 	}
-	_ = loadSeasonEps
+	var touchedEpisodes []int64
 
 	// Every file a previous scan organized, mapped to the show that held it. The
 	// provider titles written by the metadata pass are not stable across scans
@@ -1141,7 +1163,9 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 					}
 				}
 				if old.Name != seasonName && !isNumericSeasonLabel(old.Name) {
-					loadSeasonEps(seasonID)
+					if err := loadSeasonEps(seasonID); err != nil {
+						return nil, err
+					}
 					clashEP, clash := idx.eps[fmt.Sprintf("%d|%d", seasonID, ep)]
 					// The same file under the same season is not a clash — it is
 					// this show being scanned again. A clash is another file on
@@ -1220,7 +1244,9 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 		epKey := fmt.Sprintf("%d|%d", seasonID, ep)
 		epID, ok := idx.eps[epKey]
 		if !ok {
-			loadSeasonEps(seasonID)
+			if err := loadSeasonEps(seasonID); err != nil {
+				return nil, err
+			}
 			epID, ok = idx.eps[epKey]
 		}
 		if !ok {
@@ -1258,6 +1284,7 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)
 			return nil, err
 		}
+		touchedEpisodes = append(touchedEpisodes, epID)
 		prog.Update(func(st *models.ScanState) {
 			st.Done++
 			st.Current = fmt.Sprintf("%s S%02dE%02d", showTitle, season, ep)
@@ -1297,7 +1324,32 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 		log.Printf("organize: cleanup failed (done=%d): %v", progDone(prog), err)
 		return issues, err
 	}
-	return issues, nil
+	return issues, sc.pruneEmptyEpisodeDuplicates(lib.ID, touchedEpisodes)
+}
+
+// pruneEmptyEpisodeDuplicates repairs historical empty cards only for episode
+// keys actually organized this pass. A scoped scan must not sweep unrelated
+// orphan episodes, nor delete another version that still owns files.
+func (sc *Scanner) pruneEmptyEpisodeDuplicates(libID int64, episodeIDs []int64) error {
+	seen := map[int64]bool{}
+	for _, id := range episodeIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		_, err := sc.Store.DB.Exec(`DELETE FROM items
+			WHERE library_id=? AND type='episode' AND id<>?
+			AND parent_id=(SELECT parent_id FROM items WHERE id=?)
+			AND episode=(SELECT episode FROM items WHERE id=?)
+			AND EXISTS (SELECT 1 FROM files WHERE item_id=?)
+			AND NOT EXISTS (SELECT 1 FROM files WHERE item_id=items.id)
+			AND NOT EXISTS (SELECT 1 FROM items child WHERE child.parent_id=items.id)`,
+			libID, id, id, id, id)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // progDone and progTotal read the organizer's counters, for diagnostics.
