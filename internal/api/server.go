@@ -360,6 +360,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/progress", s.requireAuth(s.handleListProgress))
 	// the profile menu's watch history: every record, or only finished ones
 	mux.HandleFunc("GET /api/history", s.requireAuth(s.handleWatchHistory))
+	// 我的收藏: one list split into films and series, plus the per-item toggle the
+	// detail page's button uses. Both write the same emby_favorites rows the Emby
+	// adapter serves, so the two clients stay in sync.
+	mux.HandleFunc("GET /api/favorites", s.requireAuth(s.handleFavorites))
+	mux.HandleFunc("GET /api/favorites/{id}", s.requireAuth(s.handleFavoriteItem))
+	mux.HandleFunc("PUT /api/favorites/{id}", s.requireAuth(s.handleFavoriteItem))
 	mux.HandleFunc("GET /api/bangumi/account", s.requireAuth(s.handleBangumiAccount))
 	mux.HandleFunc("PUT /api/bangumi/account", s.requireAuth(s.handleBangumiConnect))
 	mux.HandleFunc("DELETE /api/bangumi/account", s.requireAuth(s.handleBangumiDisconnect))

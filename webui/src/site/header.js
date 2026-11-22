@@ -7,6 +7,7 @@ export const HEADER_ITEM_TYPES = {
   // 文件 is governed by the file-browser visibility setting rather than a fixed
   // role: resolveHeaderItems hides it when the viewer may not open it.
   browse: { label: '文件', icon: 'folder', sections: ['desktop', 'mobile', 'account'], fileBrowser: true },
+  favorites: { label: '我的收藏', icon: 'heart', sections: ['account'] },
   history: { label: '观看记录', icon: 'history', sections: ['account'] },
   libraries: { label: '媒体库下拉', icon: 'layers', sections: ['desktop'] },
   settings: { label: '设置', icon: 'settings', sections: ['desktop', 'mobile', 'account'], adminOnly: true },
@@ -31,7 +32,7 @@ export function createHeaderRoles() {
   const role = (admin) => ({
     desktop: items(['home', 'movies', 'shows', 'bangumi', 'browse', 'libraries']),
     mobile: items(['home', 'movies', 'shows', 'browse', ...(admin ? ['settings'] : [])]),
-    account: items(['history', 'account', 'bangumi', ...(admin ? ['settings'] : []), 'logout']),
+    account: items(['favorites', 'history', 'account', 'bangumi', ...(admin ? ['settings'] : []), 'logout']),
     showManageLibraries: admin,
   })
   return { admin: role(true), user: role(false) }
@@ -76,6 +77,7 @@ export function resolveHeaderItems(header, section, isAdmin, libraries = [], can
       case 'movies': if (!movie) return []; to = `/library/${movie.id}?type=movie`; break
       case 'shows': if (!series) return []; to = `/library/${series.id}?type=show`; break
       case 'bangumi': to = '/bangumi'; break
+      case 'favorites': to = '/favorites'; break
       case 'history': to = '/history'; break
       case 'browse': to = '/browse'; break
       case 'settings': to = '/settings'; break
@@ -85,7 +87,7 @@ export function resolveHeaderItems(header, section, isAdmin, libraries = [], can
       case 'custom': to = safeHeaderTarget(entry.to, isAdmin, canBrowse); if (!to) return []; break
       default: return []
     }
-    const copyGroup = section === 'account' && ['account', 'bangumi', 'history', 'settings', 'logout'].includes(entry.type) ? 'account' : 'nav'
+    const copyGroup = section === 'account' && ['account', 'bangumi', 'favorites', 'history', 'settings', 'logout'].includes(entry.type) ? 'account' : 'nav'
     const hasLabel = typeof entry.label === 'string' && entry.label.trim()
     const label = hasLabel ? entry.label : header?.[copyGroup]?.[entry.type] ?? spec.label
     const copyKey = hasLabel || entry.type === 'custom'

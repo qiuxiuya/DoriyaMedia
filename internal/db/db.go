@@ -102,6 +102,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS emby_favorites (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+			created_at TIMESTAMP,
 			PRIMARY KEY (user_id, item_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS emby_display_preferences (
@@ -290,6 +291,11 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.migrateLibraryExcludes(); err != nil {
+		return err
+	}
+	// Favorites used to record only the pair. The timestamp lets 我的收藏 list
+	// the newest first; existing rows stay NULL and sort after newer ones.
+	if err := s.addColumn("emby_favorites", "created_at", `ALTER TABLE emby_favorites ADD COLUMN created_at TIMESTAMP`); err != nil {
 		return err
 	}
 	if err := s.migrateProgressPlayed(); err != nil {
@@ -1435,6 +1441,76 @@ func (s *Store) ItemsByLibrary(libraryID int64, typ string, search string, sort 
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// ---------- favorites ----------
+
+// FavoriteItemIDs lists what a viewer has favorited, newest first. The table is
+// shared with the Emby adapter, so a favorite set in an Emby client and one set
+// here are the same row.
+func (s *Store) FavoriteItemIDs(userID int64) ([]int64, error) {
+	rows, err := s.DB.Query(`SELECT item_id FROM emby_favorites WHERE user_id=?
+		ORDER BY created_at DESC, item_id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// IsFavorite reports whether this viewer favorited the item.
+func (s *Store) IsFavorite(userID, itemID int64) (bool, error) {
+	var on bool
+	err := s.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM emby_favorites WHERE user_id=? AND item_id=?)`,
+		userID, itemID).Scan(&on)
+	return on, err
+}
+
+// SetFavorite adds or removes one favorite. Re-adding an existing row is a
+// no-op, so a client that repeats the call cannot fail or duplicate it; a row
+// written before the timestamp column existed gets one now, so it sorts with
+// the newer favorites instead of trailing the list forever.
+func (s *Store) SetFavorite(userID, itemID int64, on bool) error {
+	if on {
+		_, err := s.DB.Exec(`INSERT INTO emby_favorites (user_id,item_id,created_at) VALUES (?,?,?)
+			ON CONFLICT(user_id,item_id) DO UPDATE SET created_at=COALESCE(emby_favorites.created_at, excluded.created_at)`,
+			userID, itemID, time.Now())
+		return err
+	}
+	_, err := s.DB.Exec(`DELETE FROM emby_favorites WHERE user_id=? AND item_id=?`, userID, itemID)
+	return err
+}
+
+// IsFavoriteTree reports whether the item or any of its descendants is
+// favorited. The web UI's star sits on the title, so an Emby client starring
+// one episode still lights it up.
+func (s *Store) IsFavoriteTree(userID, itemID int64) (bool, error) {
+	var on bool
+	err := s.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM emby_favorites WHERE user_id=? AND item_id IN (
+		WITH RECURSIVE tree(id) AS (
+			SELECT ? UNION SELECT i.id FROM items i JOIN tree t ON i.parent_id=t.id
+		) SELECT id FROM tree))`, userID, itemID).Scan(&on)
+	return on, err
+}
+
+// ClearFavoriteTree removes the favorite of a title and of every descendant.
+// An Emby client can star one episode, which stores that episode's row; the
+// web UI shows the star on the series, so removing it there must not leave the
+// episode row behind and keep the title on the 我的收藏 shelf.
+func (s *Store) ClearFavoriteTree(userID, itemID int64) error {
+	_, err := s.DB.Exec(`DELETE FROM emby_favorites WHERE user_id=? AND item_id IN (
+		WITH RECURSIVE tree(id) AS (
+			SELECT ? UNION SELECT i.id FROM items i JOIN tree t ON i.parent_id=t.id
+		) SELECT id FROM tree)`, userID, itemID)
+	return err
 }
 
 func (s *Store) RecentItems(typ string, limit int) ([]models.Item, error) {

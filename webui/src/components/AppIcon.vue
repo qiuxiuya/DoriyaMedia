@@ -93,12 +93,17 @@ const props = defineProps({
   name: { type: String, required: true },
   size: { type: [Number, String], default: 18 },
   filled: { type: Boolean, default: false },
+  // outline overrides the shapes that draw filled by default (star, heart,
+  // bookmark). A favorite toggle needs the empty heart for "not favorited"
+  // even though the icon is normally solid.
+  outline: { type: Boolean, default: false },
   stroke: { type: [Number, String], default: 1.7 },
 })
 
 const d = computed(() => P[props.name] || P.info)
 const px = computed(() => (typeof props.size === 'number' ? `${props.size}px` : props.size))
-const isFill = computed(() => props.filled || ['play', 'pause', 'playCircle', 'star', 'heart', 'bookmark'].includes(props.name))
+const isFill = computed(() => !props.outline
+  && (props.filled || ['play', 'pause', 'playCircle', 'star', 'heart', 'bookmark'].includes(props.name)))
 </script>
 
 <template>

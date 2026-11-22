@@ -51,7 +51,7 @@ function addEntry(section) {
 }
 function copyHint(section, type) {
   if (type === 'custom') return '自定义链接显示的文字'
-  const group = section === 'account' && ['account', 'bangumi', 'settings', 'logout'].includes(type) ? 'account' : 'nav'
+  const group = section === 'account' && ['account', 'bangumi', 'favorites', 'history', 'settings', 'logout'].includes(type) ? 'account' : 'nav'
   return `留空继承共享默认文案 header.${group}.${type}；内置入口的路由固定`
 }
 function setTarget(section, index, event) {
@@ -183,6 +183,8 @@ function cold() {
 
   <PanelGroup title="共享默认文案 · 账号菜单" icon="user">
     <PanelField k="header.account.account" label="账号 · 账号设置" />
+    <PanelField k="header.account.favorites" label="账号 · 我的收藏" />
+    <PanelField k="header.account.history" label="账号 · 观看记录" />
     <PanelField k="header.account.bangumi" label="账号 · 追番" />
     <PanelField k="header.account.settings" label="账号 · 设置" />
     <PanelField k="header.account.logout" label="账号 · 退出登录" />

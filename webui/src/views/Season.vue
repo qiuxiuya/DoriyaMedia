@@ -7,6 +7,7 @@ import AppIcon from '../components/AppIcon.vue'
 import BiliBadge from '../components/BiliBadge.vue'
 import SmartImage from '../components/SmartImage.vue'
 import EmptyState from '../components/EmptyState.vue'
+import { toast } from '../toast.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,6 +15,10 @@ const data = ref(null)
 const show = ref(null)
 const siblings = ref([])
 const error = ref('')
+// 收藏归到整部剧: the season page's button and the series page write one row.
+const favorite = ref(false)
+const favoriteId = ref(0)
+const favBusy = ref(false)
 const picked = ref({})
 const hovered = ref(0)
 // Episode a search hit asked us to point at (`?ep=<id>`); it pulses three times.
@@ -54,10 +59,27 @@ function playEp(ep) {
 }
 function epNo(ep) { return ep.episode ? String(ep.episode) : '' }
 
+async function toggleFavorite() {
+  if (!favoriteId.value || favBusy.value) return
+  const next = !favorite.value
+  favBusy.value = true
+  try {
+    const r = await api.put(`/api/favorites/${favoriteId.value}`, { favorite: next })
+    favorite.value = !!r.favorite
+    toast.ok(favorite.value ? '已加入我的收藏' : '已取消收藏')
+  } catch (e) {
+    toast.err(e.message)
+  } finally {
+    favBusy.value = false
+  }
+}
+
 async function load() {
   error.value = ''
   try {
     data.value = await api.get(`/api/items/${route.params.id}`)
+    favorite.value = !!data.value?.favorite
+    favoriteId.value = data.value?.favorite_id || 0
     show.value = data.value.show || null
     const parentId = data.value.item?.parent_id
     if (!show.value && parentId) {
@@ -158,6 +180,15 @@ onMounted(load)
             <span v-if="show?.rating" class="badge rating"><AppIcon name="star" :size="11" filled />{{ Number(show.rating).toFixed(1) }}</span>
           </div>
           <p v-if="show?.overview" class="ov clamp-3">{{ show.overview }}</p>
+          <div v-if="favoriteId" class="season-actions">
+            <button
+              class="btn sm fav" :class="{ on: favorite }" :disabled="favBusy"
+              :aria-pressed="favorite" @click="toggleFavorite"
+            >
+              <AppIcon name="heart" :size="15" :outline="!favorite" />
+              {{ favorite ? '已收藏' : '收藏' }}
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -280,6 +311,11 @@ onMounted(load)
 .title { margin-bottom: 10px; text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6); }
 .meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 12px; }
 .ov { color: var(--text-2); font-size: var(--fs-14); line-height: 1.66; max-width: 72ch; margin: 0; }
+.season-actions { display: flex; gap: 10px; margin-top: 14px; }
+.btn.fav { --btn-bg: rgba(255, 255, 255, 0.1); --btn-line: rgba(255, 255, 255, 0.22); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.btn.fav:hover { --btn-bg: rgba(255, 255, 255, 0.18); }
+.btn.fav.on { color: var(--brand); --btn-line: rgba(240, 169, 46, 0.5); background: rgba(240, 169, 46, 0.14); }
+.btn.fav.on:hover { background: rgba(240, 169, 46, 0.22); }
 
 .body { padding-top: clamp(18px, 2.6vw, 32px); }
 .season-switch { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: var(--sp-5); }

@@ -696,6 +696,24 @@ func (s *Server) handleItemDetail(w http.ResponseWriter, r *http.Request, user *
 	}
 	lib, _ := s.Store.LibraryByID(item.LibraryID)
 	resp := map[string]any{"item": item, "library": lib}
+	// Favorites belong to the title, not the episode: the detail page's button
+	// and the 我的收藏 list both key on the film or series row.
+	favoriteTarget := item
+	for depth := 0; depth < 3 && favoriteTarget.ParentID != nil; depth++ {
+		parent, err := s.Store.ItemByID(*favoriteTarget.ParentID)
+		if err != nil {
+			break
+		}
+		favoriteTarget = parent
+	}
+	if favoriteTarget.Type == "movie" || favoriteTarget.Type == "show" {
+		// A title starred on one episode by an Emby client counts as favorited:
+		// the tree check keeps the web UI's star in step with that client.
+		if on, err := s.Store.IsFavoriteTree(user.ID, favoriteTarget.ID); err == nil {
+			resp["favorite"] = on
+			resp["favorite_id"] = favoriteTarget.ID
+		}
+	}
 
 	switch item.Type {
 	case "show":

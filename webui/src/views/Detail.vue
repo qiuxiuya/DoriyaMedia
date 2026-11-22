@@ -32,6 +32,10 @@ const isEpisode = computed(() => item.value?.type === 'episode')
 const files = computed(() => data.value?.files || [])
 const seasons = computed(() => data.value?.seasons || [])
 const genres = computed(() => parseGenres(item.value))
+// 收藏挂在片名上：剧集详情里收藏的是整部剧，季/集页面同样归到所属剧。
+const favorite = ref(false)
+const favoriteId = ref(0)
+const favBusy = ref(false)
 const currentFile = computed(() => files.value.find((f) => f.id === selectedFile.value) || files.value[0] || null)
 const badges = computed(() => streamBadges(currentFile.value?.media))
 const audioTracks = computed(() => currentFile.value?.media?.audio || [])
@@ -48,6 +52,8 @@ const backTarget = computed(() => (item.value?.parent_id ? `/item/${item.value.p
 async function load() {
   try {
     data.value = await api.get(`/api/items/${route.params.id}`)
+    favorite.value = !!data.value?.favorite
+    favoriteId.value = data.value?.favorite_id || 0
     if (files.value.length) selectedFile.value = files.value[0].id
     if (route.query.play === '1' && files.value.length) play()
   } catch (e) {
@@ -55,6 +61,21 @@ async function load() {
   }
 }
 onMounted(load)
+
+async function toggleFavorite() {
+  if (!favoriteId.value || favBusy.value) return
+  const next = !favorite.value
+  favBusy.value = true
+  try {
+    const r = await api.put(`/api/favorites/${favoriteId.value}`, { favorite: next })
+    favorite.value = !!r.favorite
+    toast.ok(favorite.value ? '已加入我的收藏' : '已取消收藏')
+  } catch (e) {
+    toast.err(e.message)
+  } finally {
+    favBusy.value = false
+  }
+}
 
 function play() {
   const f = currentFile.value
@@ -160,6 +181,15 @@ function seasonBackdrop(s) {
             <router-link v-else-if="seasons.length" :to="`/season/${seasons[0].id}`" class="btn play lg">
               <AppIcon name="play" :size="17" filled /> 开始观看
             </router-link>
+
+            <button
+              v-if="favoriteId" class="btn lg fav" :class="{ on: favorite }"
+              :disabled="favBusy" :aria-pressed="favorite"
+              @click="toggleFavorite"
+            >
+              <AppIcon name="heart" :size="16" :outline="!favorite" />
+              {{ favorite ? '已收藏' : '收藏' }}
+            </button>
 
             <!-- 重新识别 / 按 ID 匹配属于管理员维护操作,普通用户不显示 -->
             <template v-if="isAdmin">
@@ -386,6 +416,10 @@ function seasonBackdrop(s) {
 }
 .more-link:hover { text-decoration: underline; }
 .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.btn.fav { --btn-bg: rgba(255, 255, 255, 0.1); --btn-line: rgba(255, 255, 255, 0.22); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.btn.fav:hover { --btn-bg: rgba(255, 255, 255, 0.18); }
+.btn.fav.on { color: var(--brand); --btn-line: rgba(240, 169, 46, 0.5); background: rgba(240, 169, 46, 0.14); }
+.btn.fav.on:hover { background: rgba(240, 169, 46, 0.22); }
 .pin-wrap { position: relative; }
 .pin-wrap .btn.on { border-color: var(--line-3); background: var(--bg-3); }
 .pin-pop {
