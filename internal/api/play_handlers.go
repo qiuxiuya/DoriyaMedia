@@ -341,6 +341,27 @@ func (s *Server) playFile(w http.ResponseWriter, r *http.Request, file *models.M
 	// packager to walk there.
 	canStartAt := dec.Kind == "hls"
 
+	// sessionPackaged says this stream is produced by one long-lived packager that
+	// walks the file forward (see handleHLS). A position it has not reached yet does
+	// not exist, so the player has to wait for it — that is the only case where a
+	// "how far is it produced" frontier means anything.
+	//
+	// The other two HLS shapes have no such frontier, and treating them as if they
+	// did is what made dragging the bar past the produced edge useless: a
+	// progressive stream (302 direct / proxy) is one file behind one URL, seekable by
+	// range, and the on-demand MPEG-TS segmenter *generates* whichever segment is
+	// asked for with its own -ss — so every position in the playlist is playable at
+	// once. Byte-range HLS likewise indexes the file itself.
+	sessionPackaged := false
+	switch {
+	case dec.Kind != "hls", dec.Mode == "byterange":
+		sessionPackaged = false
+	case strings.HasPrefix(dec.Mode, "burn."), multiPart:
+		sessionPackaged = true
+	case dec.Mode == "remux":
+		sessionPackaged = s.Cfg.Playback.HLSSessionPackager
+	}
+
 	// Safari manages HLS subtitles itself and ignores <track> on a natively
 	// played stream, so it is handed a master playlist carrying the subtitles as
 	// renditions. Other players keep the <track> route, which the page controls.
@@ -522,6 +543,12 @@ func (s *Server) playFile(w http.ResponseWriter, r *http.Request, file *models.M
 		// (see the seek handling in the web player): without it, the honest answer
 		// to a drag past the packaged window is to go as far as it can and say so.
 		"can_start_at": canStartAt,
+		// Whether the stream is produced by a packager walking the file forward, so
+		// an unproduced position has to be waited for. False for a progressive
+		// stream and for the on-demand segmenter, whose positions are all playable
+		// immediately — a client must not clamp its seek bar to the produced edge
+		// for those, or the viewer cannot drag past what has merely been played.
+		"session_packaged": sessionPackaged,
 		// native_subtitles says the stream carries its subtitles as HLS
 		// renditions, so the player manages them (its own menu, its own default)
 		// and the page must not also attach <track> elements.
@@ -615,6 +642,9 @@ func (s *Server) playPreparingPayload(r *http.Request, file *models.MediaFile) m
 		"quality":        0,
 		"quality_pref":   qualityParam(r),
 		"stream_variant": "",
+		// No stream exists yet, so there is no packager walking it either. Stated
+		// so the player's seek logic keeps its shape while it polls.
+		"session_packaged": false,
 	}
 }
 

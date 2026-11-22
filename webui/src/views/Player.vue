@@ -972,6 +972,11 @@ let probeTimer = null
 let streamTimer = null
 let stallTimer = null
 let stallSince = 0
+// userPaused is the one thing the stall clock must not override: a viewer who
+// pressed pause is not waiting for data, and resuming the element on their behalf
+// would be the player fighting its user. Set on every deliberate pause, cleared
+// when the element is started again.
+let userPaused = false
 // Where the playhead was when we last looked, and when it last advanced: these
 // are what decide whether the picture is moving (see markPlaying).
 let tickAt = 0
@@ -1366,9 +1371,62 @@ function onWaiting() {
       clearStall()
       return
     }
+    // Plenty is buffered: resume by ourselves instead of waiting for the element
+    // or hls.js to get round to it. Browsers only auto-resume after a `waiting`
+    // once they judge the buffer sufficient, and on a growing EVENT playlist that
+    // judgement can be many seconds of silence while the viewer stares at a
+    // spinner. Playback was running when the stall began (userPaused is false), so
+    // pressing play here is not overriding a deliberate pause.
+    if (!userPaused && !v.ended && bufferedAhead(v) >= stallResumeSeconds) {
+      stalled.value = false
+      isLoading.value = false
+      clearStall()
+      v.play().catch(() => { /* the next tick retries */ })
+      return
+    }
     stalled.value = true
     isLoading.value = true
   }, 500)
+}
+
+/** Seconds of timeline buffered ahead of the playhead, or 0 when it is outside
+ *  every buffered range (a seek into a hole). */
+function bufferedAhead(v) {
+  if (!v?.buffered?.length) return 0
+  const t = Number(v.currentTime) || 0
+  for (let i = 0; i < v.buffered.length; i++) {
+    if (v.buffered.start(i) <= t + 0.25 && v.buffered.end(i) >= t - 0.1) {
+      return Math.max(0, v.buffered.end(i) - t)
+    }
+  }
+  return 0
+}
+
+// How much buffer is enough to resume after a stall. Small on purpose: the point
+// is to stop the spinner as soon as the picture can move again, not to top the
+// buffer up to some ideal — a growing playlist tops it up while it plays. 3s is
+// roughly one segment, which is the least a browser will not re-stall on
+// immediately for a 4s segment stream.
+const stallResumeSeconds = 3
+
+/** The viewer pressed pause (or the element paused itself). Remember it, so the
+ *  stall clock below does not answer a deliberate pause by starting playback. */
+function onPause() {
+  // A pause we cause on purpose (a quality switch, a session hold) is not the
+  // viewer's; those have their own reason to be paused and clear it when they
+  // resume.
+  if (!switchAt.value && !resumeAt.value) userPaused = true
+  saveProgress()
+  isPlaying.value = false
+  showControls()
+  stopDanmaku()
+}
+
+function onPlay() {
+  userPaused = false
+  isPlaying.value = true
+  showControls()
+  kickDanmaku()
 }
 
 function onPlaying() {
@@ -1690,7 +1748,15 @@ async function startCand(i) {
         // (measured: seg00000 plus the target fragment, playhead stuck at 0).
         const startPos = switchAt.value > 0 ? Math.max(0, switchAt.value - streamStart.value) : -1
         const hlsConfig = {
-          maxBufferLength: 30,
+          // Buffer well ahead of the playhead. A session-packaged stream is
+          // produced just ahead of the viewer, so a 30s buffer is consumed in
+          // 30s and then every further segment is a wait for the packager: the
+          // "it stalls every few minutes" this fixes. A longer buffer lets the
+          // player keep the packager running ahead of it instead of catching up
+          // to the production edge on every segment.
+          maxBufferLength: 60,
+          maxMaxBufferLength: 120,
+          backBufferLength: 30,
           manifestLoadingTimeOut: 30000,
           manifestLoadingMaxRetry: 4,
           levelLoadingTimeOut: 30000,
@@ -1698,6 +1764,33 @@ async function startCand(i) {
           fragLoadingMaxRetry: 8,
           fragLoadingRetryDelay: 1000,
           nudgeMaxRetry: 10,
+          // The server streams a *growing* EVENT playlist, and hls.js treats that
+          // as live: with no explicit position it starts at the live edge (the
+          // newest segment packaged) and, once it catches up, waits for the next
+          // one to be produced — a stall of however long the packager needs, which
+          // is exactly the "first play and every hiccup waits" complaint. Start at
+          // zero unless a resume/switch states a position, so the opening that is
+          // already on disk plays at once and the packager's frontier is never the
+          // thing being waited for.
+          startPosition: 0,
+          // Be quick to resume after a starvation: a slow-to-resume player reads
+          // as "stuck" even though data is arriving. hls.js caps how long it will
+          // stall before nudging itself; keep that cap short.
+          maxStarvationDelay: 2,
+          // Do not spend a fragment on a bandwidth probe before anything plays.
+          // hls.js otherwise downloads a full fragment first to seed ABR, which on
+          // a cloud-drive source is several seconds of a blank screen on top of the
+          // first real fragment — the exact "nothing happens for 10s" start.
+          testBandwidth: false,
+          // Start on the declared level and let ABR adjust while it plays, so the
+          // first fragment requested is the one that will be shown.
+          startLevel: -1,
+          // Begin fetching the first fragment as soon as the playlist is parsed,
+          // rather than waiting for attachMedia's first tick.
+          startFragPrefetch: true,
+          // A conservative seed for ABR when the probe above is skipped; without
+          // one hls.js starts pessimistic and picks a needlessly low rung.
+          abrEwmaDefaultEstimate: 3000000,
         }
         if (startPos > 0) hlsConfig.startPosition = startPos
         hls.value = new Hls(hlsConfig)
@@ -1855,6 +1948,18 @@ function applyDuration() {
 }
 
 /**
+ * Whether this stream is produced by one packager walking the file forward, so a
+ * position it has not reached does not exist yet.
+ *
+ * The server answers this per decision (`session_packaged`). It is false for a
+ * progressive stream (302 direct / proxy), which is one file behind one URL that
+ * the browser seeks by range, and for the on-demand segmenter, which generates
+ * whichever segment is asked for. In both, every position is playable at once, so
+ * clamping the bar to what has been produced would be the bug — not the safeguard.
+ */
+const sessionPackaged = computed(() => !!play.value?.session_packaged)
+
+/**
  * How far into the file there is actually something to play, in file time.
  *
  * Deliberately not `seekable`: a packaged stream is served as an event playlist
@@ -1866,6 +1971,9 @@ function applyDuration() {
  *
  * What exists is what has been buffered, plus what the server says it has finished
  * producing (segment generation progress, which the session path reports too).
+ *
+ * Only meaningful when sessionPackaged is true; a progressive stream answers every
+ * position from the source itself.
  */
 function reachable() {
   let reach = streamStart.value
@@ -1940,7 +2048,11 @@ function maybeResume() {
       return
     }
   }
-  if (target > reachable()) return
+  // A progressive stream (302 direct or proxy) is the whole file behind one URL:
+  // the browser seeks it by range request, so a position it has not buffered is
+  // still reachable. Only a packaging session has a frontier that must be waited
+  // for, and reachable() answers that question alone.
+  if (sessionPackaged.value && target > reachable()) return
   const wasResumeSwitch = switchIsResume.value
   const label = switchLabel.value
   switchAt.value = 0
@@ -2004,12 +2116,15 @@ function onLoadedMetadata() {
     // queue a second "continue from…" over the picture, and while the new rung is
     // still settling it could pull the playhead back.
     if (Math.abs(position.value - p.position) < 3) return
-    // A position the stream has not packaged yet cannot be jumped to: the fragments
+    // A position a packager has not reached yet cannot be jumped to: the fragments
     // do not exist, so the element stalls with nothing buffered and the playhead
     // appears to wander. Wait for the packaging to reach it instead — it runs many
     // times faster than playback — and go there the moment it does. The wait is
     // paused, so the opening is not played at a viewer who is resuming.
-    if (p.position <= reachable()) {
+    //
+    // A progressive stream and the on-demand segmenter are exempt: both can serve
+    // any position at once, so there is nothing to wait for.
+    if (!sessionPackaged.value || p.position <= reachable()) {
       v.currentTime = Math.max(0, p.position - streamStart.value)
       position.value = p.position
       toast.info(`已从 ${fmtTime(p.position)} 继续播放`)
@@ -2057,7 +2172,10 @@ function onEnded() {
   // is the truth about this stream, not a reason to try forever.
   if (Math.abs(at - endedAt) < 30) return
   endedAt = at
-  if (reachable() > at + 5) {
+  // Only a packaging session can end early at its production edge; a progressive
+  // stream that reports "ended" mid-file is telling the truth about a broken
+  // source, and reconnecting would loop.
+  if (sessionPackaged.value && reachable() > at + 5) {
     // More exists than this stream knows about: start again with the fuller
     // timeline, and beginning where it stopped. The position goes through
     // `switchAt` because that is what becomes the element's `startPosition` — a
@@ -2772,10 +2890,11 @@ function seekBy(delta) {
   if (!v || !isFinite(v.duration)) return
   // The element's own clock is stream time; the jump is meant in file time.
   const target = v.currentTime + streamStart.value + delta
-  // Jumping past what has been packaged would only stall on fragments that do not
-  // exist yet. The server can start a stream at any position (can_start_at), and
-  // the same reload that a drag past the window uses lands there directly.
-  if (delta > 0 && target > reachable() && play.value?.can_start_at && target < duration.value - 1) {
+  // Jumping past what a packager has produced would only stall on fragments that
+  // do not exist yet. The server can start a stream at any position (can_start_at),
+  // and the same reload that a drag past the window uses lands there directly.
+  // A progressive stream has no such edge: the browser fetches the range itself.
+  if (delta > 0 && sessionPackaged.value && target > reachable() && play.value?.can_start_at && target < duration.value - 1) {
     resumeAt.value = 0
     seekTo(target)
     return
@@ -2818,17 +2937,21 @@ function endScrub() {
   if (scrubbing.value && v && isFinite(scrubTime.value)) {
     // scrubTime is file time; the element wants stream time.
     let target = scrubTime.value
-    // How far this stream reaches: what its session has packaged. With on-demand
-    // packaging that is a window that grows behind the playhead, not the whole
-    // episode — and dragging past it is the one thing a player cannot do, because
-    // those fragments do not exist yet.
-    const reach = reachable()
-    const beyond = target > reach - 0.5
+    // How far this stream reaches: what a packager walking the file has produced.
+    // Only a session has that frontier. A progressive stream (302 direct or proxy)
+    // is one file behind one URL: the browser fetches the bytes it needs for
+    // whatever range it is asked to play, and the on-demand segmenter generates
+    // each requested segment itself — so nothing in either is "not cached yet",
+    // and clamping the drag to a produced edge would be the bug.
+    const packaging = sessionPackaged.value
+    const reach = packaging ? reachable() : duration.value
+    const beyond = packaging && target > reach - 0.5
     // The stream does not contain the file's opening when its session began
     // mid-file (a resume), so a drag before the session's own start is as
     // unreachable as one past the packaging edge. Same remedy: ask the server for
-    // a stream that begins there.
-    const before = target < streamStart.value - 0.5
+    // a stream that begins there. A progressive stream always starts at 0, so
+    // there is no such gap.
+    const before = packaging && target < streamStart.value - 0.5
     if ((beyond || before) && play.value?.can_start_at && target > 0) {
       // The server can begin a stream there, so ask for one: the same thing it does
       // for "continue watching", with the position stated instead of remembered.
@@ -3086,8 +3209,8 @@ onBeforeUnmount(() => {
               @error="onErr"
               @timeupdate="onTimeUpdate"
               @progress="onTimeUpdate"
-              @pause="saveProgress(); isPlaying = false; showControls(); stopDanmaku()"
-              @play="isPlaying = true; showControls(); kickDanmaku()"
+              @pause="onPause"
+              @play="onPlay"
               @seeking="onSubtitleSeeking"
               @seeked="onSubtitleSeeked"
               @waiting="onWaiting"

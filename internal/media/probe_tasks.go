@@ -51,6 +51,11 @@ type probeJob struct {
 
 // ProbeFromCache parses a stored probe when it is complete enough to decide
 // playback. Mirrors the acceptance rule used by EnsureProbe.
+//
+// A stored probe whose format_name is empty is still usable: the decision falls
+// back to the file extension when the container is unknown (see CanDirectPlay),
+// so accepting it gives the same answer on every play instead of re-probing —
+// and re-probing a cold cloud file is exactly where the inconsistency came from.
 func ProbeFromCache(file *models.MediaFile) *Probe {
 	if file == nil || file.Probe == "" {
 		return nil
@@ -252,7 +257,15 @@ func (e *Engine) probeWithFallback(ctx context.Context, target string, headers m
 		quick.AnalyzeSec = e.Cfg.Playback.ProbeAnalyzeSec
 	}
 	probe, err := e.execProbe(ctx, &quick, target, headers, proxy)
-	if err == nil && (probe.Video() != nil || len(probe.Streams) > 0) {
+	// A shallow read of a cold cloud file can reach the streams while the moov
+	// box (and therefore format_name) is still out of range. Retry with the deep
+	// window, which reads far enough to name the container. If even that cannot,
+	// the probe is used anyway: CanDirectPlay falls back to the file extension,
+	// so the answer does not depend on whether the source happened to be warm.
+	usable := func(p *Probe) bool {
+		return p != nil && (p.Video() != nil || len(p.Streams) > 0) && !containerUndecided(p.Format.FormatName)
+	}
+	if err == nil && usable(probe) {
 		return probe, nil
 	}
 	if ctx.Err() != nil {
@@ -265,16 +278,17 @@ func (e *Engine) probeWithFallback(ctx context.Context, target string, headers m
 	deep := *e.prober
 	deep.ProbeSizeMB, deep.AnalyzeSec = deepProbeSizeMB, deepProbeAnalyzeSec
 	deepProbe, deepErr := e.execProbe(ctx, &deep, target, headers, proxy)
-	if deepErr == nil && (deepProbe.Video() != nil || len(deepProbe.Streams) > 0) {
+	if deepErr == nil && usable(deepProbe) {
 		return deepProbe, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	// Shallow probe succeeded but found no video: an audio-only or still-file
-	// source is a legitimate answer, so keep it rather than failing.
-	if deepErr == nil {
-		return probe, nil
+	// Neither window could name the container. The probe is still returned — the
+	// decision now falls back to the file extension rather than treating the hole
+	// as "unsupported", so the answer is consistent whether or not the source had
+	// warmed up when it was read. Reporting a failure here instead would make the
+	// very first play of a cold file fail outright, which is worse than deciding
+	// from the extension.
+	if deepErr != nil && !(probe != nil && len(probe.Streams) > 0) {
+		return nil, deepErr
 	}
 	return probe, nil
 }

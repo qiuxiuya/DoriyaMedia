@@ -99,6 +99,30 @@ func containerTokens(formatName string) []string {
 	return out
 }
 
+// knownContainerExt reports whether a file extension names a container that can
+// be matchable without trusting ffprobe's format_name.
+//
+// ffprobe's shallow window (-probesize/-analyzeduration) can return the stream
+// list of a cold cloud file while format_name is still empty — that field lives
+// in the moov box, which a short read may not reach. Deciding "container not
+// supported" from a missing format_name turned such a file into an HLS remux on
+// the first play and a direct play on the second, purely because the source had
+// warmed up by then.
+func knownContainerExt(ext string) bool {
+	switch ext {
+	case ".mp4", ".m4v", ".mov", ".mkv", ".webm":
+		return true
+	}
+	return false
+}
+
+// containerUndecided reports that ffprobe could not name the container. Callers
+// must not read that as "unsupported": a container is only rejected when it is
+// positively known to be something else.
+func containerUndecided(formatName string) bool {
+	return strings.TrimSpace(formatName) == ""
+}
+
 func containerMatches(formatName string, allowWebM bool) bool {
 	found := false
 	for _, t := range containerTokens(formatName) {
@@ -144,12 +168,22 @@ func CanDirectPlay(probe *Probe, path string, client ClientKind, reportedAudio m
 	}
 	ext := extOf(path)
 
+	// An undecided container is not an unsupported one. A shallow ffprobe pass on
+	// a cold cloud file often returns the streams while format_name is still
+	// empty; rejecting on that made the same episode remux on the first play and
+	// direct-play on the second. Fall back to the extension when the probe could
+	// not name the container.
+	containerKnown := !containerUndecided(probe.Format.FormatName)
+	if !containerKnown && !knownContainerExt(ext) {
+		return false, "容器未知,且扩展名不足以判断能否直连"
+	}
+
 	switch client {
 	case ClientSafari:
 		if ext != ".mp4" && ext != ".m4v" && ext != ".mov" {
 			return false, "Safari 仅支持 MP4/MOV 直连"
 		}
-		if !containerMatches(probe.Format.FormatName, false) {
+		if containerKnown && !containerMatches(probe.Format.FormatName, false) {
 			return false, "容器不是 MP4"
 		}
 	case ClientChrome:
@@ -157,7 +191,7 @@ func CanDirectPlay(probe *Probe, path string, client ClientKind, reportedAudio m
 		// earlier). Whether the codec inside actually decodes (HEVC needs an
 		// OS/extension decoder) is re-checked client-side — the player falls
 		// back to cloud transcode automatically when it can't.
-		if !containerMatches(probe.Format.FormatName, true) && ext != ".mkv" {
+		if containerKnown && !containerMatches(probe.Format.FormatName, true) && ext != ".mkv" {
 			return false, "容器不支持直连"
 		}
 	case ClientFirefox:
