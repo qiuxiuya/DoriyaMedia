@@ -50,13 +50,23 @@ function sizeOf(ep) {
   const v = versionOf(ep)
   return v?.size ? fmtSize(v.size) : ''
 }
+/**
+ * Where this episode would resume from, or 0 when it should start over. A
+ * finished episode is deliberately treated as never watched: `played` is the
+ * explicit watched flag, and "继续播放 已播放 xx:xx" is the wrong call to action.
+ */
+function resumeAt(ep) {
+  const p = versionOf(ep)?.progress
+  if (!p || p.played) return 0
+  return Math.max(0, Number(p.position) || 0)
+}
 function playEp(ep, fromStart = false) {
   const id = fileOf(ep)
   if (!id) {
     error.value = `「${ep.name || '第 ' + ep.episode + ' 集'}」没有关联的视频文件——请重新扫描媒体库。`
     return
   }
-  const at = fromStart ? 0 : Number(versionOf(ep)?.progress?.position) || 0
+  const at = fromStart ? 0 : resumeAt(ep)
   router.push({ path: `/play/${id}`, query: fromStart || at > 0 ? { at: String(at) } : {} })
 }
 function epNo(ep) { return ep.episode ? String(ep.episode) : '' }
@@ -226,7 +236,7 @@ onMounted(load)
         >
           <div class="ep-no">{{ epNo(ep) }}</div>
 
-          <button class="ep-still" :aria-label="`${versionOf(ep)?.progress?.position > 0 ? '继续播放' : '播放'} ${ep.name}`" @click="playEp(ep)">
+          <button class="ep-still" :aria-label="`${resumeAt(ep) > 0 ? '继续播放' : '播放'} ${ep.name}`" @click="playEp(ep)">
             <SmartImage v-if="ep.still_path" :src="imgUrl(ep.id, 'still')" :alt="ep.name" :seed="ep.name" />
             <div v-else class="ph">
               <AppIcon name="film" :size="20" :stroke="1.5" />

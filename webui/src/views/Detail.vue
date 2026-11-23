@@ -78,10 +78,16 @@ async function toggleFavorite() {
   }
 }
 
+// A finished file resumes from the beginning: `played` is the explicit watched
+// flag, and "继续播放 已播放 1:20:00" on a completed film is not a useful action.
+function resumeAt(f) {
+  if (!f?.progress || f.progress.played) return 0
+  return Math.max(0, Number(f.progress.position) || 0)
+}
 function play(fromStart = false) {
   const f = currentFile.value
   if (!f) return
-  const at = fromStart ? 0 : Number(f.progress?.position) || 0
+  const at = fromStart ? 0 : resumeAt(f)
   router.push({ path: `/play/${f.id}`, query: fromStart || at > 0 ? { at: String(at) } : {} })
 }
 
