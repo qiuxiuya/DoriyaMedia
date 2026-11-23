@@ -1029,6 +1029,11 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 		log.Printf("organize: file → show index for library %d failed: %v", lib.ID, err)
 		showByFile = map[string]int64{}
 	}
+	fileRows, err := sc.Store.FileEpisodeRows(lib.ID)
+	if err != nil {
+		log.Printf("organize: file → episode index for library %d failed: %v", lib.ID, err)
+		fileRows = map[string]db.FileEpisode{}
+	}
 	// A show that holds files from several source folders is a grouping an
 	// older scan got wrong (one "TV" show for every single-season bilibili
 	// series). Do not anchor to it: let the files be planned into their real
@@ -1131,9 +1136,19 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 		}
 	}
 
+	// Episode rows already bound to a file, so no second file claims one.
+	boundRows := map[int64]string{}
+	for key, fe := range fileRows {
+		if _, seen := boundRows[fe.ItemID]; !seen {
+			boundRows[fe.ItemID] = key
+		}
+	}
+
 	for _, pl := range append(numbered, named...) {
 		fr, showTitle, season, seasonName, ep := pl.fr, pl.show, pl.season, pl.label, pl.episode
 		epName := pl.episodeName
+		nameEpisode := ep
+		thisFile := fileSourceKey(fr.SourceID, fr.Path)
 
 		showKey := NormalizeKey(showTitle)
 		showID, ok := pl.showID, pl.showID != 0
@@ -1241,18 +1256,37 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			}
 		}
 
+		existing := db.FileEpisode{}
+		if fe, ok := fileRows[fileSourceKey(fr.SourceID, fr.Path)]; ok {
+			existing = fe
+		}
+
 		epKey := fmt.Sprintf("%d|%d", seasonID, ep)
 		epID, ok := idx.eps[epKey]
+		if !ok && existing.ItemID != 0 && existing.SeasonID == seasonID {
+			epID, ok = existing.ItemID, true
+		}
+		if ok {
+			if owner, held := boundRows[epID]; held && owner != thisFile {
+				ok = false
+			}
+		}
 		if !ok {
 			if err := loadSeasonEps(seasonID); err != nil {
 				return nil, err
 			}
 			epID, ok = idx.eps[epKey]
+			if ok {
+				if owner, held := boundRows[epID]; held && owner != thisFile {
+					ok = false
+				}
+			}
 		}
 		if !ok {
 			pid := seasonID
 			it := &models.Item{LibraryID: lib.ID, Type: "episode", ParentID: &pid,
-				Name: orDefault(epName, fmt.Sprintf("第 %d 集", ep)), Season: season, Episode: ep, SourceType: fr.SrcType}
+				Name: orDefault(epName, fmt.Sprintf("第 %d 集", ep)), Season: season, Episode: ep,
+				SourceEpisode: nameEpisode, SourceType: fr.SrcType}
 			if err := sc.Store.InsertItem(it); err != nil {
 				return nil, err
 			}
@@ -1260,11 +1294,23 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 			idx.eps[epKey] = epID
 		} else if cur, err := sc.Store.ItemByID(epID); err == nil {
 			changed := false
-			if cur.Season != season || cur.Episode != ep {
+			// Leave a converted number alone when the file name has not changed.
+			converted := existing.ItemID == cur.ID && existing.SourceEpisode == nameEpisode &&
+				cur.Episode != nameEpisode
+			if converted {
+				if cur.Season != season {
+					cur.Season = season
+					changed = true
+				}
+			} else if cur.Season != season || cur.Episode != ep {
 				// Repair what an older scan stored: an episode written as season 0 sorts
 				// to the end of its own season, so a rescan has to correct the row rather
 				// than leave the library in the state that was wrong to begin with.
 				cur.Season, cur.Episode = season, ep
+				changed = true
+			}
+			if cur.SourceEpisode != nameEpisode {
+				cur.SourceEpisode = nameEpisode
 				changed = true
 			}
 			if epName != "" && cur.Name != epName {
@@ -1279,6 +1325,7 @@ func (sc *Scanner) organizeSeries(lib *models.Library, files []fileRec, prog *mo
 				_ = sc.Store.UpdateItemMeta(cur)
 			}
 		}
+		boundRows[epID] = thisFile
 
 		if err := writeFile(fr, epID); err != nil {
 			log.Printf("organize: UpsertFile failed (done=%d) path=%q: %v", progDone(prog), fr.Path, err)

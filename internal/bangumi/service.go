@@ -327,13 +327,17 @@ func (s *Service) resolveTarget(fileID int64) (*syncTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	if it.Type != "episode" || it.Episode <= 0 {
+	number := it.SourceEpisode
+	if number <= 0 {
+		number = it.Episode
+	}
+	if it.Type != "episode" || number <= 0 {
 		return nil, errNotSyncable
 	}
 	cur := it
 	for depth := 0; depth < 6 && cur != nil; depth++ {
 		if cur.BGMID > 0 {
-			return &syncTarget{SubjectID: cur.BGMID, EpisodeNumber: it.Episode}, nil
+			return &syncTarget{SubjectID: cur.BGMID, EpisodeNumber: number}, nil
 		}
 		if cur.ParentID == nil {
 			break

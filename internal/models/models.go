@@ -149,23 +149,26 @@ type LibrarySource struct {
 }
 
 type Item struct {
-	ID            int64     `json:"id"`
-	LibraryID     int64     `json:"library_id"`
-	Type          string    `json:"type"` // movie | show | season | episode
-	ParentID      *int64    `json:"parent_id,omitempty"`
-	Name          string    `json:"name"`
-	OriginalTitle string    `json:"original_title,omitempty"`
-	Year          int       `json:"year,omitempty"`
-	TMDBID        int       `json:"tmdb_id,omitempty"`
-	BGMID         int       `json:"bgm_id,omitempty"` // Bangumi (bgm.tv) subject id
-	Overview      string    `json:"overview,omitempty"`
-	PosterPath    string    `json:"poster_path,omitempty"` // local cache file name
-	BackdropPath  string    `json:"backdrop_path,omitempty"`
-	StillPath     string    `json:"still_path,omitempty"`
-	Rating        float64   `json:"rating,omitempty"`
-	Genres        string    `json:"genres,omitempty"` // json array
-	Season        int       `json:"season,omitempty"`
-	Episode       int       `json:"episode,omitempty"`
+	ID            int64   `json:"id"`
+	LibraryID     int64   `json:"library_id"`
+	Type          string  `json:"type"` // movie | show | season | episode
+	ParentID      *int64  `json:"parent_id,omitempty"`
+	Name          string  `json:"name"`
+	OriginalTitle string  `json:"original_title,omitempty"`
+	Year          int     `json:"year,omitempty"`
+	TMDBID        int     `json:"tmdb_id,omitempty"`
+	BGMID         int     `json:"bgm_id,omitempty"` // Bangumi (bgm.tv) subject id
+	Overview      string  `json:"overview,omitempty"`
+	PosterPath    string  `json:"poster_path,omitempty"` // local cache file name
+	BackdropPath  string  `json:"backdrop_path,omitempty"`
+	StillPath     string  `json:"still_path,omitempty"`
+	Rating        float64 `json:"rating,omitempty"`
+	Genres        string  `json:"genres,omitempty"` // json array
+	Season        int     `json:"season,omitempty"`
+	Episode       int     `json:"episode,omitempty"`
+	// SourceEpisode is the number the file name claimed before conversion to the
+	// season's own number. Zero means not yet converted.
+	SourceEpisode int       `json:"source_episode,omitempty"`
 	AirDate       string    `json:"air_date,omitempty"`
 	AddedAt       time.Time `json:"added_at"`
 	// SourceType is the kind of storage source every file of this item comes

@@ -888,6 +888,7 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 	if !isPlaceholderEpisodeName(ep) {
 		keepName = ep.Name
 	}
+	m.fixEpisodeNumber(ctx, show, season, ep)
 	// Editions scraped before the naming fix kept every episode's still under
 	// the show's TMDB id, so they all pointed at one file. Treating such a name
 	// as missing lets a rescan write this episode its own copy. A still whose
@@ -950,9 +951,56 @@ func (m *Manager) enrichEpisode(ctx context.Context, drv source.Driver, lib *mod
 					ep.StillPath = name
 				}
 			}
+			if !restoreOnly {
+				m.applySeasonEpisode(ep, season, e)
+			}
 			_ = m.Store.UpdateItemMeta(ep)
 		}
 	}
+}
+
+// fixEpisodeNumber converts a stored whole-run episode number into the season's
+// own number for a complete row that predates the conversion.
+func (m *Manager) fixEpisodeNumber(ctx context.Context, show, season, ep *models.Item) {
+	if show == nil || season == nil || ep.Episode <= 0 {
+		return
+	}
+	if ep.SourceEpisode > 0 && ep.SourceEpisode != ep.Episode {
+		return
+	}
+	if show.TMDBID <= 0 || !m.tmdb().Enabled() || season.Season <= 0 {
+		return
+	}
+	sd := m.tmdbSeason(ctx, show.TMDBID, season.Season)
+	if sd == nil || pickEpisode(sd.Episodes, ep.Episode) != nil {
+		return
+	}
+	if e := m.findTMDBEpisode(ctx, show.TMDBID, season.Season, ep.Episode); e != nil {
+		m.applySeasonEpisode(ep, season, e)
+		if err := m.Store.UpdateItemMeta(ep); err != nil {
+			log.Printf("metadata: convert episode number for item %d failed: %v", ep.ID, err)
+		}
+	}
+}
+
+// applySeasonEpisode rewrites the stored episode number as the season's own.
+// It keeps the name's number in source_episode and leaves the row alone when the
+// converted number is already taken by another episode of the season.
+func (m *Manager) applySeasonEpisode(ep *models.Item, season *models.Item, e *TMDBEpisode) {
+	if season == nil || e == nil || e.EpisodeNumber <= 0 || ep.Episode == e.EpisodeNumber {
+		return
+	}
+	if ep.SourceEpisode <= 0 {
+		ep.SourceEpisode = ep.Episode
+	}
+	taken, err := m.Store.EpisodeNumberTaken(season.ID, int64(e.EpisodeNumber), ep.ID)
+	if err != nil || taken {
+		return
+	}
+	if isPlaceholderEpisodeName(ep) {
+		ep.Name = fmt.Sprintf("第 %d 集", e.EpisodeNumber)
+	}
+	ep.Episode = e.EpisodeNumber
 }
 
 // findTMDBEpisode locates this file's episode in a TMDB season.
@@ -1950,7 +1998,11 @@ func (m *Manager) applyBGM(ctx context.Context, it *models.Item, sub *BgmSubject
 // tryEpisodeBGM fills the episode number's Chinese title and air date from the
 // show's Bangumi subject (cached per run, so one fetch serves every episode).
 func (m *Manager) tryEpisodeBGM(ctx context.Context, ep *models.Item, show *models.Item) bool {
-	if show == nil || show.BGMID == 0 || ep.Episode <= 0 {
+	num := ep.SourceEpisode
+	if num <= 0 {
+		num = ep.Episode
+	}
+	if show == nil || show.BGMID == 0 || num <= 0 {
 		return false
 	}
 	eps, err := m.bgmEpisodes(ctx, show.BGMID)
@@ -1958,7 +2010,7 @@ func (m *Manager) tryEpisodeBGM(ctx context.Context, ep *models.Item, show *mode
 		return false
 	}
 	for _, e := range eps {
-		if e.Number != ep.Episode {
+		if e.Number != num {
 			continue
 		}
 		if t := strings.TrimSpace(e.Title); t != "" {

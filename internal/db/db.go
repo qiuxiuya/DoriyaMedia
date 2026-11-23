@@ -178,6 +178,7 @@ func (s *Store) migrate() error {
 			genres TEXT DEFAULT '[]',
 			season INTEGER DEFAULT 0,
 			episode INTEGER DEFAULT 0,
+			source_episode INTEGER DEFAULT 0,
 			air_date TEXT DEFAULT '',
 			source_type TEXT NOT NULL DEFAULT '',
 			added_at TIMESTAMP NOT NULL
@@ -301,7 +302,26 @@ func (s *Store) migrate() error {
 	if err := s.migrateProgressPlayed(); err != nil {
 		return err
 	}
+	if err := s.migrateSourceEpisode(); err != nil {
+		return err
+	}
 	return s.migrateUsers()
+}
+
+// migrateSourceEpisode adds the release's own episode number. Existing rows keep
+// 0, which is what marks them as not yet converted.
+func (s *Store) migrateSourceEpisode() error {
+	has, err := s.hasColumn("items", "source_episode")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := s.DB.Exec(`ALTER TABLE items ADD COLUMN source_episode INTEGER DEFAULT 0`); err != nil {
+		return fmt.Errorf("items.source_episode: %w", err)
+	}
+	return nil
 }
 
 // migrateProgressPlayed adds the explicit watched flag and backfills existing
@@ -1317,10 +1337,10 @@ func (s *Store) Libraries() ([]models.Library, error) {
 
 func (s *Store) InsertItem(it *models.Item) error {
 	res, err := s.execRetryResult(`INSERT INTO items
-		(library_id, type, parent_id, name, original_title, year, tmdb_id, bgm_id, overview, poster_path, backdrop_path, still_path, rating, genres, season, episode, air_date, source_type, added_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(library_id, type, parent_id, name, original_title, year, tmdb_id, bgm_id, overview, poster_path, backdrop_path, still_path, rating, genres, season, episode, source_episode, air_date, source_type, added_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		it.LibraryID, it.Type, it.ParentID, it.Name, it.OriginalTitle, it.Year, it.TMDBID, it.BGMID, it.Overview,
-		it.PosterPath, it.BackdropPath, it.StillPath, it.Rating, it.Genres, it.Season, it.Episode, it.AirDate, it.SourceType, time.Now())
+		it.PosterPath, it.BackdropPath, it.StillPath, it.Rating, it.Genres, it.Season, it.Episode, it.SourceEpisode, it.AirDate, it.SourceType, time.Now())
 	if err != nil {
 		return err
 	}
@@ -1330,15 +1350,15 @@ func (s *Store) InsertItem(it *models.Item) error {
 
 func (s *Store) UpdateItemMeta(it *models.Item) error {
 	_, err := s.DB.Exec(`UPDATE items SET name=?, original_title=?, year=?, tmdb_id=?, bgm_id=?, overview=?,
-		poster_path=?, backdrop_path=?, still_path=?, rating=?, genres=?, season=?, episode=?, air_date=? WHERE id=?`,
+		poster_path=?, backdrop_path=?, still_path=?, rating=?, genres=?, season=?, episode=?, source_episode=?, air_date=? WHERE id=?`,
 		it.Name, it.OriginalTitle, it.Year, it.TMDBID, it.BGMID, it.Overview,
-		it.PosterPath, it.BackdropPath, it.StillPath, it.Rating, it.Genres, it.Season, it.Episode, it.AirDate, it.ID)
+		it.PosterPath, it.BackdropPath, it.StillPath, it.Rating, it.Genres, it.Season, it.Episode, it.SourceEpisode, it.AirDate, it.ID)
 	return err
 }
 
 // itemCols is the column list of every item query, in itemDestinations' order.
 const itemCols = `id, library_id, type, parent_id, name, original_title, year, tmdb_id, bgm_id, overview,
-	poster_path, backdrop_path, still_path, rating, genres, season, episode, air_date, source_type, added_at`
+	poster_path, backdrop_path, still_path, rating, genres, season, episode, source_episode, air_date, source_type, added_at`
 
 func (s *Store) ItemByID(id int64) (*models.Item, error) {
 	it, dest := itemDestinations()
@@ -1644,8 +1664,8 @@ func itemDestinations() (*models.Item, []any) {
 	dest := []any{
 		&it.ID, &it.LibraryID, &it.Type, &it.ParentID, &it.Name, &it.OriginalTitle,
 		&it.Year, &it.TMDBID, &it.BGMID, &it.Overview, &it.PosterPath, &it.BackdropPath,
-		&it.StillPath, &it.Rating, &it.Genres, &it.Season, &it.Episode, &it.AirDate,
-		&it.SourceType, &it.AddedAt,
+		&it.StillPath, &it.Rating, &it.Genres, &it.Season, &it.Episode, &it.SourceEpisode,
+		&it.AirDate, &it.SourceType, &it.AddedAt,
 	}
 	return it, dest
 }
@@ -1731,6 +1751,15 @@ type FileState struct {
 	MTime  int64
 }
 
+// FileEpisode is the episode row a file is currently bound to.
+type FileEpisode struct {
+	ItemID   int64
+	SeasonID int64
+	Episode  int
+	// SourceEpisode is the number the file name gave when the row was written.
+	SourceEpisode int
+}
+
 // FileStates indexes a library's stored files by "<sourceID>|<path>", letting a
 // rescan skip files that are unchanged.
 func (s *Store) FileStates(libraryID int64) (map[string]FileState, error) {
@@ -1793,6 +1822,45 @@ func (s *Store) FileShowIndex(libraryID int64) (byFile map[string]int64, split m
 		}
 	}
 	return byFile, split, rows.Err()
+}
+
+// EpisodeNumberTaken reports whether another episode of the same season already
+// carries this number.
+func (s *Store) EpisodeNumberTaken(seasonID int64, number, exceptItemID int64) (bool, error) {
+	var id int64
+	err := s.DB.QueryRow(`SELECT id FROM items
+		WHERE parent_id=? AND type='episode' AND episode=? AND id<>? LIMIT 1`,
+		seasonID, number, exceptItemID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// FileEpisodeRows maps each episode file to the row it is bound to, keyed by
+// "<sourceID>|<path>".
+func (s *Store) FileEpisodeRows(libraryID int64) (map[string]FileEpisode, error) {
+	rows, err := s.DB.Query(`SELECT f.source_id, f.path, ep.id, COALESCE(ep.parent_id, 0), ep.episode, ep.source_episode
+		FROM files f JOIN items ep ON ep.id = f.item_id AND ep.type = 'episode'
+		WHERE ep.library_id = ?`, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]FileEpisode{}
+	for rows.Next() {
+		var sourceID int64
+		var path string
+		var fe FileEpisode
+		if err := rows.Scan(&sourceID, &path, &fe.ItemID, &fe.SeasonID, &fe.Episode, &fe.SourceEpisode); err != nil {
+			return nil, err
+		}
+		out[fmt.Sprintf("%d|%s", sourceID, path)] = fe
+	}
+	return out, rows.Err()
 }
 
 func firstPathSegment(path string) string {
