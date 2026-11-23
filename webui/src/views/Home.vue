@@ -117,27 +117,37 @@ function libPath(lib) {
             <h2 class="section-title"><AppIcon name="history" :size="18" /> 继续观看</h2>
           </div>
           <MediaRail>
-            <router-link
+            <div
               v-for="(c, i) in continueList" :key="c.item.id + '-' + c.file_id"
-              :to="`/play/${c.file_id}`" class="wide-card"
-              :style="{ '--i': Math.min(i, 8) }"
+              class="wide-card" :style="{ '--i': Math.min(i, 8) }"
             >
-              <div class="still">
-                <SmartImage :src="artUrl(c.item)" :alt="c.item.name" :seed="c.item.name" />
-                <BiliBadge v-if="c.item.source_type === 'bilibili'" mini />
-              </div>
-              <span class="quick"><AppIcon name="play" :size="19" filled /></span>
-              <div class="body">
-                <div class="t truncate">{{ c.item.name }}</div>
-                <div class="s">
-                  <span v-if="episodeLabel(c.item)" class="ep">{{ episodeLabel(c.item) }}</span>
-                  {{ fmtRemaining(c.position, c.duration) }}
+              <router-link
+                :to="{ path: `/play/${c.file_id}`, query: { at: String(c.position) } }"
+                class="resume-link" :aria-label="`继续播放 ${c.item.name}`"
+              >
+                <div class="still">
+                  <SmartImage :src="artUrl(c.item)" :alt="c.item.name" :seed="c.item.name" />
+                  <BiliBadge v-if="c.item.source_type === 'bilibili'" mini />
                 </div>
-              </div>
-              <div class="progress">
-                <i :style="{ width: Math.min(100, c.percent) + '%' }"></i>
-              </div>
-            </router-link>
+                <span class="quick"><AppIcon name="play" :size="19" filled /></span>
+                <div class="body">
+                  <div class="t truncate">{{ c.item.name }}</div>
+                  <div class="s">
+                    <span v-if="episodeLabel(c.item)" class="ep">{{ episodeLabel(c.item) }}</span>
+                    {{ fmtRemaining(c.position, c.duration) }}
+                  </div>
+                </div>
+                <div class="progress">
+                  <i :style="{ width: Math.min(100, c.percent) + '%' }"></i>
+                </div>
+              </router-link>
+              <router-link
+                :to="{ path: `/play/${c.file_id}`, query: { at: '0' } }"
+                class="restart-link" :aria-label="`从头播放 ${c.item.name}`"
+              >
+                <AppIcon name="refresh" :size="12" /> 从头播放
+              </router-link>
+            </div>
           </MediaRail>
         </section>
 
@@ -246,6 +256,27 @@ function libPath(lib) {
 }
 .fh-inner { display: flex; flex-direction: column; gap: 10px; }
 .fh-inner p { max-width: 56ch; margin: 0; }
+
+.resume-link { display: block; }
+.restart-link {
+  position: absolute; top: 50%; left: calc(50% + 33px); z-index: 1;
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 30px; padding: 5px 8px; border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(6, 7, 10, 0.78); color: #fff;
+  font-size: var(--fs-11); white-space: nowrap;
+  opacity: 0; transform: translateY(-50%); pointer-events: none;
+  transition: opacity var(--t-mid), background var(--t-fast);
+}
+.wide-card:hover .restart-link, .wide-card:focus-within .restart-link { opacity: 1; pointer-events: auto; }
+.restart-link:hover { background: rgba(6, 7, 10, 0.95); }
+.wide-card:focus-within .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.resume-link:focus-visible { outline: 2px solid var(--brand); outline-offset: -3px; }
+.restart-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+@media (hover: none) {
+  .wide-card .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  .restart-link { opacity: 1; pointer-events: auto; }
+}
 
 .wide-card .s .ep {
   display: inline-block;

@@ -7,6 +7,7 @@ import AppIcon from '../components/AppIcon.vue'
 import BiliBadge from '../components/BiliBadge.vue'
 import SmartImage from '../components/SmartImage.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PlaybackActions from '../components/PlaybackActions.vue'
 import { toast } from '../toast.js'
 
 const route = useRoute()
@@ -49,13 +50,14 @@ function sizeOf(ep) {
   const v = versionOf(ep)
   return v?.size ? fmtSize(v.size) : ''
 }
-function playEp(ep) {
+function playEp(ep, fromStart = false) {
   const id = fileOf(ep)
   if (!id) {
     error.value = `「${ep.name || '第 ' + ep.episode + ' 集'}」没有关联的视频文件——请重新扫描媒体库。`
     return
   }
-  router.push(`/play/${id}`)
+  const at = fromStart ? 0 : Number(versionOf(ep)?.progress?.position) || 0
+  router.push({ path: `/play/${id}`, query: fromStart || at > 0 ? { at: String(at) } : {} })
 }
 function epNo(ep) { return ep.episode ? String(ep.episode) : '' }
 
@@ -224,7 +226,7 @@ onMounted(load)
         >
           <div class="ep-no">{{ epNo(ep) }}</div>
 
-          <button class="ep-still" :aria-label="`播放 ${ep.name}`" @click="playEp(ep)">
+          <button class="ep-still" :aria-label="`${versionOf(ep)?.progress?.position > 0 ? '继续播放' : '播放'} ${ep.name}`" @click="playEp(ep)">
             <SmartImage v-if="ep.still_path" :src="imgUrl(ep.id, 'still')" :alt="ep.name" :seed="ep.name" />
             <div v-else class="ph">
               <AppIcon name="film" :size="20" :stroke="1.5" />
@@ -256,9 +258,10 @@ onMounted(load)
                 {{ v.label || '默认' }}
               </button>
             </div>
-            <button class="btn play sm" @click="playEp(ep)">
-              <AppIcon name="play" :size="14" filled /> 播放
-            </button>
+            <PlaybackActions
+              :file-id="fileOf(ep)" :progress="versionOf(ep)?.progress" size="sm"
+              @play="playEp(ep, $event)"
+            />
           </div>
         </article>
       </div>

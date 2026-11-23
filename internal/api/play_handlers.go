@@ -174,6 +174,7 @@ func (s *Server) playFile(w http.ResponseWriter, r *http.Request, file *models.M
 			}
 		}
 	}
+	// An explicit zero restarts playback, overriding any saved position.
 	// A seek is not a resume. The guards above belong to "carry on where you left
 	// off" — they refuse to resume from the opening seconds or into the final
 	// stretch, because those are not places a viewer stopped at. A player asking to
@@ -183,7 +184,7 @@ func (s *Server) playFile(w http.ResponseWriter, r *http.Request, file *models.M
 	// resume go down the same path: one "where the viewer wants to be", one start
 	// for the session that serves it.
 	if v := r.URL.Query().Get("at"); v != "" {
-		if at, err := strconv.ParseFloat(v, 64); err == nil && at > 0 && (dec.Duration <= 0 || at < dec.Duration) {
+		if at, err := strconv.ParseFloat(v, 64); err == nil && !math.IsInf(at, 0) && at >= 0 && (dec.Duration <= 0 || at < dec.Duration) {
 			resumeFrom = at
 		}
 	}

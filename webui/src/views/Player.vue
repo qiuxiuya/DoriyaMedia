@@ -259,6 +259,11 @@ let switchAutoPlay = true
 // apply an old position in the middle of playback — which then also becomes the
 // target a switch starts from. Once per decision is enough.
 let progressChecked = false
+// Keep an explicit starting position through probing and retries until the first
+// metadata arrives. Zero means restart; it must also suppress saved-progress seeks.
+const requestedStart = Number(route.query.at)
+let pendingStartAt = route.query.at !== undefined && Number.isFinite(requestedStart) && requestedStart >= 0
+  ? requestedStart : undefined
 // Whether a completed session has been asked to reload its playlist. hls.js
 // keeps the level details it parsed while the playlist was live; a paused player
 // does not refresh them by itself, so the element never learns the VOD duration
@@ -1217,7 +1222,7 @@ const clientCaps = (() => {
   }
 })()
 
-function fetchPlay(at) {
+function fetchPlay(at = pendingStartAt) {
   const params = new URLSearchParams({ client: detectClient() })
   if (forceMode.value) params.set('force', forceMode.value)
   if (burnSub.value) params.set('burn', String(burnSub.value))
@@ -1228,7 +1233,7 @@ function fetchPlay(at) {
   if (qualityPref.value > 0) params.set('q', String(qualityPref.value))
   // An explicit seek position, in file seconds. The server answers with the session
   // boundary it snapped to (stream_start), so the element's clock stays aligned.
-  if (at > 0) params.set('at', String(Math.floor(at)))
+  if (Number.isFinite(at) && at >= 0) params.set('at', String(at))
   return api.get(`/api/play/${route.params.fileId}?${params}`)
 }
 
@@ -1256,13 +1261,9 @@ function startProbePoll() {
       return
     }
     if (st && st.state === 'ready') {
-      try { play.value = await fetchPlay() } catch (e) { fatal.value = e.message; isLoading.value = false; return }
-      if (disposed) return
-      loadQueue()
-      if (unplayable()) return
-      if (play.value?.state === 'probing') { probeTimer = setTimeout(tick, 800); return }
-      await nextTick()
-      attachSource()
+      // Use the same startup path after probing so explicit starts also restore
+      // the stream origin and prepare a session at the requested position.
+      await loadDecision(forceMode.value)
       return
     }
     // idle: no job registered anymore (server restart, or a failed probe inside
@@ -1275,7 +1276,7 @@ function startProbePoll() {
       }
       try { play.value = await fetchPlay() } catch { /* handled below */ }
       if (disposed) return
-      if (play.value?.url) { await nextTick(); attachSource(); return }
+      if (play.value?.url) { await loadDecision(forceMode.value); return }
       if (play.value?.state !== 'probing') {
         fatal.value = '媒体探测未能启动,请重试'
         isLoading.value = false
@@ -2091,6 +2092,8 @@ function onLoadedMetadata() {
   // it corrects the playhead once the picture is really moving, and until then
   // `switchAt` keeps the "switching" wording on the overlay.
   if (switchTo > 0) {
+    pendingStartAt = undefined
+    progressChecked = true
     resumeAt.value = switchTo
     // A rung picked while paused stays paused: hls.js has already put the playhead
     // on the right frame, and `v.play()` in startCand was skipped for this case.
@@ -2107,10 +2110,17 @@ function onLoadedMetadata() {
   // The saved position belongs to the first attach of this playback; a later
   // metadata (a re-attach after a seek, or the second level hls.js builds) must
   // not apply it again over a picture that is already playing.
-  if (progressChecked) return
+  const startAt = pendingStartAt
+  pendingStartAt = undefined
+  if (progressChecked && startAt === undefined) return
   progressChecked = true
-  api.get(`/api/progress?file_id=${route.params.fileId}`).then((p) => {
-    if (!p || !(p.position > 30) || !(p.position < duration.value * 0.95)) return
+  const savedProgress = startAt === undefined
+    ? api.get(`/api/progress?file_id=${route.params.fileId}`)
+    : Promise.resolve({ position: startAt })
+  savedProgress.then((p) => {
+    if (!p || !(p.position > 0)) return
+    if (duration.value > 0 && p.position >= duration.value) return
+    if (startAt === undefined && (!(p.position > 30) || !(p.position < duration.value * 0.95))) return
     // A quality switch has already restored the viewer to this position (it is
     // saved before the switch). Applying the same saved progress again would only
     // queue a second "continue from…" over the picture, and while the new rung is

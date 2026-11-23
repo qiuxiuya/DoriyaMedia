@@ -6,6 +6,7 @@ import AppIcon from '../components/AppIcon.vue'
 import BiliBadge from '../components/BiliBadge.vue'
 import SmartImage from '../components/SmartImage.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PlaybackActions from '../components/PlaybackActions.vue'
 import { toast } from '../toast.js'
 import { isAdmin } from '../auth.js'
 
@@ -77,10 +78,11 @@ async function toggleFavorite() {
   }
 }
 
-function play() {
+function play(fromStart = false) {
   const f = currentFile.value
   if (!f) return
-  router.push(`/play/${f.id}`)
+  const at = fromStart ? 0 : Number(f.progress?.position) || 0
+  router.push({ path: `/play/${f.id}`, query: fromStart || at > 0 ? { at: String(at) } : {} })
 }
 
 async function refresh() {
@@ -175,9 +177,10 @@ function seasonBackdrop(s) {
           </button>
 
           <div class="actions">
-            <button v-if="!isShow" class="btn play lg" :disabled="!currentFile" @click="play">
-              <AppIcon name="play" :size="17" filled /> 播放
-            </button>
+            <PlaybackActions
+              v-if="!isShow" :file-id="currentFile?.id || 0" :progress="currentFile?.progress"
+              size="lg" @play="play"
+            />
             <router-link v-else-if="seasons.length" :to="`/season/${seasons[0].id}`" class="btn play lg">
               <AppIcon name="play" :size="17" filled /> 开始观看
             </router-link>
@@ -327,9 +330,10 @@ function seasonBackdrop(s) {
                 </div>
               </div>
 
-              <button class="btn play block mt-4" :disabled="!currentFile" @click="play">
-                <AppIcon name="play" :size="16" filled /> 播放这个版本
-              </button>
+              <PlaybackActions
+                class="mt-4" :file-id="currentFile?.id || 0" :progress="currentFile?.progress"
+                label="播放这个版本" @play="play"
+              />
 
               <div class="play-hint tiny">
                 <AppIcon name="sparkles" :size="12" />
@@ -540,7 +544,8 @@ function seasonBackdrop(s) {
   .orig { font-size: var(--fs-13); margin-bottom: 0; }
   .meta { margin-bottom: 0; }
   .overview { -webkit-line-clamp: 3; font-size: var(--fs-14); }
-  .actions .btn { flex: 1; min-width: 128px; }
+  .actions > .btn, .actions :deep(.playback-actions .btn) { flex: 1; min-width: 128px; }
+  .actions .playback-actions { flex: 1 1 100%; }
   .pin-pop { right: auto; left: 0; }
 }
 </style>

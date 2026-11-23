@@ -4,15 +4,18 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"doriyamedia/internal/models"
 )
 
 // versionDTO is one playable variant of the same episode/movie
 // (e.g. the BDRip vs the WebRip release of a show).
 type versionDTO struct {
-	ID      int64  `json:"id"`
-	Label   string `json:"label"`
-	Size    int64  `json:"size"`
-	Current bool   `json:"current"`
+	ID       int64            `json:"id"`
+	Label    string           `json:"label"`
+	Size     int64            `json:"size"`
+	Current  bool             `json:"current"`
+	Progress *models.Progress `json:"progress,omitempty"`
 }
 
 // versionsFor lists every file bound to the item as a human-labelled variant.

@@ -740,6 +740,9 @@ func (s *Server) handleItemDetail(w http.ResponseWriter, r *http.Request, user *
 		out := make([]episodeOut, 0, len(eps))
 		for _, ep := range eps {
 			vs := s.versionsForAll(ep.ID, 0)
+			for i := range vs {
+				vs[i].Progress, _ = s.Store.ProgressForFile(user.ID, vs[i].ID)
+			}
 			var def int64
 			if len(vs) > 0 {
 				def = vs[0].ID
@@ -759,6 +762,9 @@ func (s *Server) handleItemDetail(w http.ResponseWriter, r *http.Request, user *
 			dto := map[string]any{
 				"id": f.ID, "size": f.Size, "mtime": f.MTime, "path": f.Path,
 				"label": VersionLabel(f.Path),
+			}
+			if p, err := s.Store.ProgressForFile(user.ID, f.ID); err == nil {
+				dto["progress"] = p
 			}
 			if f.Probe != "" {
 				if sum := probeSummary(f.Probe); sum != nil {
