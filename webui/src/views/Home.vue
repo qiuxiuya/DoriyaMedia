@@ -257,27 +257,6 @@ function libPath(lib) {
 .fh-inner { display: flex; flex-direction: column; gap: 10px; }
 .fh-inner p { max-width: 56ch; margin: 0; }
 
-.resume-link { display: block; }
-.restart-link {
-  position: absolute; top: 50%; left: calc(50% + 33px); z-index: 1;
-  display: inline-flex; align-items: center; gap: 4px;
-  min-height: 30px; padding: 5px 8px; border-radius: var(--r-pill);
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  background: rgba(6, 7, 10, 0.78); color: #fff;
-  font-size: var(--fs-11); white-space: nowrap;
-  opacity: 0; transform: translateY(-50%); pointer-events: none;
-  transition: opacity var(--t-mid), background var(--t-fast);
-}
-.wide-card:hover .restart-link, .wide-card:focus-within .restart-link { opacity: 1; pointer-events: auto; }
-.restart-link:hover { background: rgba(6, 7, 10, 0.95); }
-.wide-card:focus-within .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-.resume-link:focus-visible { outline: 2px solid var(--brand); outline-offset: -3px; }
-.restart-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
-@media (hover: none) {
-  .wide-card .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  .restart-link { opacity: 1; pointer-events: auto; }
-}
-
 .wide-card .s .ep {
   display: inline-block;
   margin-right: 6px;

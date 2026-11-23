@@ -38,6 +38,11 @@ async function load() {
 
 onMounted(load)
 
+// An unfinished record resumes where it stopped; a finished one starts over.
+function startQuery(record) {
+  return record.watched || !(record.position > 0) ? {} : { at: String(record.position) }
+}
+
 // Switching a tab edits the URL, and the browser's back button walks the tabs.
 watch(tab, (v) => {
   const want = v === 'watched' ? 'watched' : ''
@@ -87,29 +92,40 @@ const empty = computed(() => !loading.value && !records.value.length)
 
     <!-- records -->
     <div v-else class="hist-grid">
-      <router-link
+      <div
         v-for="(c, i) in records" :key="c.item.id + '-' + c.file_id"
-        :to="`/play/${c.file_id}`" class="wide-card"
-        :style="{ '--i': Math.min(i, 12) }"
+        class="wide-card" :style="{ '--i': Math.min(i, 12) }"
       >
-        <div class="still">
-          <SmartImage :src="artUrl(c.item)" :alt="c.item.name" :seed="c.item.name" />
-          <BiliBadge v-if="c.item.source_type === 'bilibili'" mini />
-          <span v-if="c.watched" class="watched-tag"><AppIcon name="check" :size="12" /> 已看完</span>
-        </div>
-        <span class="quick"><AppIcon name="play" :size="19" filled /></span>
-        <div class="body">
-          <div class="t truncate">{{ c.item.name }}</div>
-          <div class="s">
-            <span v-if="episodeLabel(c.item)" class="ep">{{ episodeLabel(c.item) }}</span>
-            <template v-if="c.watched">已看完 · {{ fmtRelative(c.updated_at) }}</template>
-            <template v-else>{{ fmtRemaining(c.position, c.duration) }} · {{ fmtRelative(c.updated_at) }}</template>
+        <router-link
+          :to="{ path: `/play/${c.file_id}`, query: startQuery(c) }"
+          class="resume-link" :aria-label="`${c.watched ? '播放' : '继续播放'} ${c.item.name}`"
+        >
+          <div class="still">
+            <SmartImage :src="artUrl(c.item)" :alt="c.item.name" :seed="c.item.name" />
+            <BiliBadge v-if="c.item.source_type === 'bilibili'" mini />
+            <span v-if="c.watched" class="watched-tag"><AppIcon name="check" :size="12" /> 已看完</span>
           </div>
-        </div>
-        <div class="progress">
-          <i :style="{ width: Math.min(100, c.percent) + '%' }"></i>
-        </div>
-      </router-link>
+          <span class="quick"><AppIcon name="play" :size="19" filled /></span>
+          <div class="body">
+            <div class="t truncate">{{ c.item.name }}</div>
+            <div class="s">
+              <span v-if="episodeLabel(c.item)" class="ep">{{ episodeLabel(c.item) }}</span>
+              <template v-if="c.watched">已看完 · {{ fmtRelative(c.updated_at) }}</template>
+              <template v-else>{{ fmtRemaining(c.position, c.duration) }} · {{ fmtRelative(c.updated_at) }}</template>
+            </div>
+          </div>
+          <div class="progress">
+            <i :style="{ width: Math.min(100, c.percent) + '%' }"></i>
+          </div>
+        </router-link>
+        <router-link
+          v-if="!c.watched && c.position > 0"
+          :to="{ path: `/play/${c.file_id}`, query: { at: '0' } }"
+          class="restart-link" :aria-label="`从头播放 ${c.item.name}`"
+        >
+          <AppIcon name="refresh" :size="12" /> 从头播放
+        </router-link>
+      </div>
     </div>
   </div>
 </template>

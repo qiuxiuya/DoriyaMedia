@@ -810,6 +810,38 @@ select option { background: var(--bg-2); color: var(--text-1); }
 .wide-card:hover { transform: translateY(-4px); border-color: var(--line-3); box-shadow: var(--sh-3); }
 .wide-card:hover .still img { transform: scale(1.05); }
 .wide-card:hover .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.wide-card .resume-link { display: block; }
+.wide-card .restart-link {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + 33px);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(6, 7, 10, 0.78);
+  color: #fff;
+  font-size: var(--fs-11);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(-50%);
+  pointer-events: none;
+  transition: opacity var(--t-mid), background var(--t-fast);
+}
+.wide-card:hover .restart-link, .wide-card:focus-within .restart-link { opacity: 1; pointer-events: auto; }
+.wide-card .restart-link:hover { background: rgba(6, 7, 10, 0.95); }
+.wide-card:focus-within .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.wide-card .resume-link:focus-visible { outline: 2px solid var(--brand); outline-offset: -3px; }
+.wide-card .restart-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+/* Touch screens have no hover: show both play entrances at once. */
+@media (hover: none) {
+  .wide-card .quick { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  .wide-card .restart-link { opacity: 1; pointer-events: auto; }
+}
 
 /* ============================ media rows ================================= */
 
